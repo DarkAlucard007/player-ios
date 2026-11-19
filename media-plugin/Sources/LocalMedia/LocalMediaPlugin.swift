@@ -28,7 +28,10 @@ public class LocalMediaPlugin: CAPPlugin, CAPBridgedPlugin, WKURLSchemeHandler, 
         CAPPluginMethod(name: "deleteFile", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "clearCache", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "captureFrame", returnType: CAPPluginReturnPromise),
-        CAPPluginMethod(name: "saveImageToPhotos", returnType: CAPPluginReturnPromise)
+        CAPPluginMethod(name: "saveImageToPhotos", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "pickSMB", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "listSMBFiles", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "releaseSMBFile", returnType: CAPPluginReturnPromise)
     ]
 
     // MARK: - 存储
@@ -48,6 +51,12 @@ public class LocalMediaPlugin: CAPPlugin, CAPBridgedPlugin, WKURLSchemeHandler, 
 
     /// pickMedia 的异步回调 id（文件选择器回调时再取回 call）
     private var pendingPickId: String?
+
+    /// pickSMB 的异步回调 id
+    private var pendingSMBPickId: String?
+
+    /// SMB 会话文件：名称 → 安全作用域 URL（保持 startAccessing 直到 release）
+    private var smbFiles: [String: URL] = [:]
 
     // MARK: - 注册 URL scheme 处理器
 
@@ -126,6 +135,43 @@ public class LocalMediaPlugin: CAPPlugin, CAPBridgedPlugin, WKURLSchemeHandler, 
         }
     }
 
+    // MARK: - SMB（走 iOS 系统「文件」App 的 SMB 支持：选择器 + 安全作用域 URL 流式读取）
+
+    @objc func pickSMB(_ call: CAPPluginCall) {
+        guard let anchor = bridge?.viewController ?? Self.topViewController() else {
+            call.reject("no presentation anchor")
+            return
+        }
+        // asCopy: false → 原地读取（安全作用域），视频直接从 NAS 流式播放，不拷贝到手机
+        let picker = UIDocumentPickerViewController(forOpeningContentTypes: [.movie, .video, .mpeg4Movie, .quickTimeMovie], asCopy: false)
+        picker.allowsMultipleSelection = true
+        picker.delegate = self
+        bridge?.saveCall(call)
+        pendingSMBPickId = call.callbackId
+        anchor.present(picker, animated: true)
+    }
+
+    @objc func listSMBFiles(_ call: CAPPluginCall) {
+        var files: [[String: Any]] = []
+        for (name, url) in smbFiles {
+            let size = (try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0
+            files.append(["name": name, "size": size, "kind": "video"])
+        }
+        files.sort { ($0["name"] as? String ?? "") < ($1["name"] as? String ?? "") }
+        call.resolve(["files": files])
+    }
+
+    @objc func releaseSMBFile(_ call: CAPPluginCall) {
+        guard let name = call.options["name"] as? String else {
+            call.reject("missing name")
+            return
+        }
+        if let url = smbFiles.removeValue(forKey: name) {
+            url.stopAccessingSecurityScopedResource()
+        }
+        call.resolve(["ok": true])
+    }
+
     @objc func saveImageToPhotos(_ call: CAPPluginCall) {
         guard let b64 = call.options["image"] as? String,
               let data = Data(base64Encoded: b64),
@@ -166,6 +212,29 @@ public class LocalMediaPlugin: CAPPlugin, CAPBridgedPlugin, WKURLSchemeHandler, 
 
     public func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
         controller.dismiss(animated: true)
+
+        // SMB 选择：保持安全作用域访问，登记到会话表，走 localmedia://smb/<name> 流式播放
+        if let smbId = pendingSMBPickId {
+            pendingSMBPickId = nil
+            var results: [[String: Any]] = []
+            for url in urls {
+                let baseName = url.lastPathComponent
+                let key = uniqueSMBName(baseName)
+                url.startAccessingSecurityScopedResource()
+                smbFiles[key] = url
+                let size = (try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0
+                results.append([
+                    "name": key,
+                    "size": size,
+                    "kind": "video",
+                    "url": "localmedia://smb/\(key.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? key)"
+                ])
+            }
+            resolveSaved(smbId, data: ["files": results])
+            return
+        }
+
+        // 普通导入：拷贝进 App 缓存目录
         var results: [[String: Any]] = []
         for url in urls {
             let name = url.lastPathComponent
@@ -195,10 +264,30 @@ public class LocalMediaPlugin: CAPPlugin, CAPBridgedPlugin, WKURLSchemeHandler, 
 
     public func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) {
         controller.dismiss(animated: true)
+        if let id = pendingSMBPickId {
+            resolveSaved(id, data: ["files": []])
+            pendingSMBPickId = nil
+            return
+        }
         if let id = pendingPickId {
             resolveSaved(id, data: ["files": []])
         }
         pendingPickId = nil
+    }
+
+    /// SMB 会话表内的唯一名称（同名追加序号）
+    private func uniqueSMBName(_ name: String) -> String {
+        var candidate = name
+        var i = 1
+        while smbFiles[candidate] != nil {
+            if let dot = name.lastIndex(of: "."), dot > name.index(name.startIndex, offsetBy: 1) {
+                candidate = name[..<dot] + " (\(i))" + name[dot...]
+            } else {
+                candidate = name + " (\(i))"
+            }
+            i += 1
+        }
+        return candidate
     }
 
     // MARK: - WKURLSchemeHandler（localmedia:// 流式读取，支持 Range）
@@ -214,10 +303,21 @@ public class LocalMediaPlugin: CAPPlugin, CAPBridgedPlugin, WKURLSchemeHandler, 
             urlSchemeTask.didFailWithError(Self.error(404, "empty path"))
             return
         }
-        let fileURL = mediaDir.appendingPathComponent(path)
-        guard FileManager.default.fileExists(atPath: fileURL.path) else {
-            urlSchemeTask.didFailWithError(Self.error(404, path))
-            return
+        // smb/<name> → 会话表里的安全作用域 URL（直接从 NAS 流式读取）
+        let fileURL: URL
+        if path.hasPrefix("smb/") {
+            let key = String(path.dropFirst(4))
+            guard let smbURL = smbFiles[key] else {
+                urlSchemeTask.didFailWithError(Self.error(404, "smb file not in session: " + key))
+                return
+            }
+            fileURL = smbURL
+        } else {
+            fileURL = mediaDir.appendingPathComponent(path)
+            guard FileManager.default.fileExists(atPath: fileURL.path) else {
+                urlSchemeTask.didFailWithError(Self.error(404, path))
+                return
+            }
         }
         let fileSize = Int64((try? fileURL.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0)
         let mime = Self.mimeType(for: fileURL.pathExtension)

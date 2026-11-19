@@ -2,7 +2,7 @@
 
 import { state } from '../core/store';
 import type { MediaItem, Source } from '../core/types';
-import { localUrl } from '../native/localMedia';
+import { localUrl, smbUrl } from '../native/localMedia';
 import { WebDAVClient } from './webdav';
 import { makeClient } from './mediaServer';
 
@@ -43,6 +43,8 @@ export interface ResolvedPlayback {
   title: string;
   /** 本地文件名（用于截帧/字幕匹配），网络源为 null */
   localName: string | null;
+  /** SMB 会话文件名（关闭播放器时释放安全作用域访问） */
+  smbName?: string | null;
 }
 
 /** 把 media key 解析成播放地址 */
@@ -67,6 +69,12 @@ export function resolvePlayback(key: string): ResolvedPlayback | null {
       title: path.split('/').filter(Boolean).pop() || path,
       localName: null
     };
+  }
+  if (key.startsWith('smb:')) {
+    const name = key.slice(4);
+    const url = smbUrl(name);
+    if (!url) return null;
+    return { url, title: name, localName: null, smbName: name };
   }
   if (key.startsWith('emby:')) {
     const rest = key.slice(5);

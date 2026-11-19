@@ -23,6 +23,9 @@ interface LocalMediaPluginInterface {
   clearCache(): Promise<{ ok: boolean }>;
   captureFrame(options: { name: string; time: number }): Promise<{ image?: string; error?: string }>;
   saveImageToPhotos(options: { image: string }): Promise<{ ok: boolean }>;
+  pickSMB(): Promise<{ files: PickedFile[] }>;
+  listSMBFiles(): Promise<{ files: LocalFileInfo[] }>;
+  releaseSMBFile(options: { name: string }): Promise<{ ok: boolean }>;
 }
 
 export const LocalMedia = registerPlugin<LocalMediaPluginInterface>('LocalMedia');
@@ -37,6 +40,42 @@ const hasDom = typeof window !== 'undefined' && !!window.document;
 export function localUrl(name: string): string | null {
   if (isNative || !hasDom) return 'localmedia:///' + encodeURIComponent(name);
   return webFileUrls.get(name) ?? null;
+}
+
+/** SMB 会话文件的播放 URL（真机：localmedia://smb/<name> ；浏览器模式无 SMB） */
+export function smbUrl(name: string): string | null {
+  if (isNative || !hasDom) return 'localmedia://smb/' + encodeURIComponent(name);
+  return null;
+}
+
+/** 打开系统文件选择器选 SMB 视频（需先在「文件」App 注册过 SMB 服务器）。浏览器模式返回空。 */
+export async function pickSMB(): Promise<PickedFile[]> {
+  if (!isNative) return [];
+  try {
+    const res = await LocalMedia.pickSMB();
+    return res.files;
+  } catch {
+    return [];
+  }
+}
+
+export async function listSMBFiles(): Promise<LocalFileInfo[]> {
+  if (!isNative) return [];
+  try {
+    const res = await LocalMedia.listSMBFiles();
+    return res.files;
+  } catch {
+    return [];
+  }
+}
+
+export async function releaseSMBFile(name: string): Promise<void> {
+  if (!isNative) return;
+  try {
+    await LocalMedia.releaseSMBFile({ name });
+  } catch {
+    // 忽略
+  }
 }
 
 /** 选择本地视频 / 字幕文件（真机走系统文件选择器，浏览器走 file input） */

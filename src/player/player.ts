@@ -2,7 +2,7 @@
 
 import { state, saveRecord, setSettings, addToPlaylist } from '../core/store';
 import { fmtTime, escapeHtml, extOf } from '../core/util';
-import { captureFrame, saveImageToPhotos, pickMedia, readTextFile, localUrl } from '../native/localMedia';
+import { captureFrame, saveImageToPhotos, pickMedia, readTextFile, localUrl, releaseSMBFile } from '../native/localMedia';
 import { parseSubtitle, cueAt, type Cue } from './subtitles';
 import { EQ, EQ_BAND_LABELS } from './eq';
 import { resolvePlayback, findMatchingSubtitle } from '../sources/registry';
@@ -142,6 +142,8 @@ function teardown(): void {
   if (s.saveTimer) window.clearInterval(s.saveTimer);
   cancelAnimationFrame(s.raf);
   if (s.eqOn) s.eq.detach();
+  // 释放 SMB 安全作用域访问
+  if (s.key.startsWith('smb:')) void releaseSMBFile(s.key.slice(4));
   const video = root?.querySelector<HTMLVideoElement>('#pv');
   if (video) {
     video.pause();
@@ -324,6 +326,7 @@ function loadNext(s: PlayerSession): void {
   const resolved = resolvePlayback(nextKey);
   if (!resolved) return;
   const video = root!.querySelector<HTMLVideoElement>('#pv')!;
+  if (s.key.startsWith('smb:')) void releaseSMBFile(s.key.slice(4));
   s.key = nextKey;
   s.index++;
   s.cues = [];

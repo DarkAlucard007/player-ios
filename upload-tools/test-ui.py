@@ -197,6 +197,12 @@ def main():
         page.wait_for_selector("#br-add", timeout=5000)
         page.click("#br-add")
         page.wait_for_selector("#f-host")
+        # SMB 类型选项存在且切换后显示 SMB 字段
+        page.select_option("#f-type", "smb")
+        page.wait_for_selector("#f-smb-host", timeout=3000)
+        check("SMB 类型表单可切换", page.locator("#f-smb-share").count() == 1)
+        page.select_option("#f-type", "webdav")
+        page.wait_for_selector("#f-host", timeout=3000)
         page.fill("#f-name", "TestNAS")
         page.fill("#f-host", webdav_url)
         page.click("#f-save")

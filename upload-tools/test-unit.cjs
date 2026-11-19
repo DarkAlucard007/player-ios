@@ -237,6 +237,13 @@ globalThis.DOMParser = class {
   check('同名外挂字幕匹配', matched === 'movie.srt', String(matched));
   check('无匹配字幕 → null', findMatchingSubtitle('other.mp4') === null);
 
+  // ============ 4. SMB key 解析 ============
+  console.log('=== 4. SMB key 解析 ===');
+  const smb = resolvePlayback('smb:我的 电影.mp4');
+  check('smb key → localmedia://smb/ URL', smb && smb.url === 'localmedia://smb/' + encodeURIComponent('我的 电影.mp4'), smb && smb.url);
+  check('smb key → smbName', smb && smb.smbName === '我的 电影.mp4');
+  check('smb key → localName 为 null', smb && smb.localName === null);
+
   // ============ 结果 ============
   console.log('');
   console.log('===== 单元测试：' + passed + ' 项通过，' + failed + ' 项失败 =====');

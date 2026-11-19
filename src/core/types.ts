@@ -2,7 +2,7 @@
 
 export type MediaKind = 'video' | 'subtitle';
 
-export type SourceType = 'webdav' | 'emby' | 'jellyfin';
+export type SourceType = 'webdav' | 'emby' | 'jellyfin' | 'smb';
 
 /** 本地缓存中的文件（经 LocalMedia 插件导入） */
 export interface LocalFile {
@@ -36,10 +36,12 @@ export interface Source {
   id: string;
   type: SourceType;
   name: string;
-  host: string; // 如 http://192.168.1.10:5005 或 192.168.1.10:8096
+  host: string; // WebDAV/媒体服务器地址，或 SMB 的 NAS IP
+  port?: string; // SMB 端口（默认 445）
   user?: string;
   pass?: string;
   rootPath?: string; // WebDAV 根路径
+  share?: string; // SMB 共享名
   apiKey?: string; // Emby / Jellyfin
 }
 
