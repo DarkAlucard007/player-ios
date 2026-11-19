@@ -274,6 +274,13 @@ jobs:
               print('symbol OK:', sym)
           print('archive verification OK')
           PY
+          then
+            echo "::error::校验归档产物失败，日志尾部："
+            tail -n 20 ../../verify.log | while IFS= read -r line; do
+              echo "::error::$line"
+            done
+            exit 1
+          fi
 
       - name: 打包为未签名 IPA（带版本号）
         env:
