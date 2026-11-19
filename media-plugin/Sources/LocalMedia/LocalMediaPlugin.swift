@@ -112,7 +112,7 @@ public class LocalMediaPlugin: CAPPlugin, CAPBridgedPlugin, WKURLSchemeHandler, 
         generator.maximumSize = CGSize(width: 1280, height: 1280)
         let time = CMTime(seconds: max(0, seconds), preferredTimescale: 600)
         generator.generateCGImagesAsynchronously(forTimes: [NSValue(time: time)]) {
-            (image: CGImage?, _ actualTime: CMTime, _ orientation: CGImagePropertyOrientation, _ wasDegraded: Bool, _ error: Error?) in
+            (_ requestedTime: CMTime, image: CGImage?, _ actualTime: CMTime, _ result: AVAssetImageGenerator.Result, _ error: Error?) in
             guard let image,
                   let uiImage = UIImage(cgImage: image, scale: 1, orientation: .up),
                   let data = uiImage.jpegData(compressionQuality: 0.8) else {
