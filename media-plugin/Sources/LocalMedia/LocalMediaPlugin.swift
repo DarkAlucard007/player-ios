@@ -113,10 +113,13 @@ public class LocalMediaPlugin: CAPPlugin, CAPBridgedPlugin, WKURLSchemeHandler, 
         let time = CMTime(seconds: max(0, seconds), preferredTimescale: 600)
         generator.generateCGImagesAsynchronously(forTimes: [NSValue(time: time)]) {
             (_ requestedTime: CMTime, image: CGImage?, _ actualTime: CMTime, _ result: AVAssetImageGenerator.Result, _ error: Error?) in
-            guard let image,
-                  let uiImage = UIImage(cgImage: image, scale: 1, orientation: .up),
-                  let data = uiImage.jpegData(compressionQuality: 0.8) else {
+            guard let image else {
                 self.resolveSaved(call.callbackId, data: ["error": "frame capture failed"])
+                return
+            }
+            let uiImage = UIImage(cgImage: image, scale: 1, orientation: .up)
+            guard let data = uiImage.jpegData(compressionQuality: 0.8) else {
+                self.resolveSaved(call.callbackId, data: ["error": "encode failed"])
                 return
             }
             self.resolveSaved(call.callbackId, data: ["image": data.base64EncodedString()])
