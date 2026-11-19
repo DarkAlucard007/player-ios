@@ -1,0 +1,25 @@
+{
+  "name": "player",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1",
+    "build": "npm run icons && vite build && node scripts/inline-assets.mjs",
+    "icons": "node scripts/gen-icons.mjs",
+    "check": "tsc --noEmit && npm run build",
+    "ipa:check": "node upload-tools/build-ipa.mjs --dry-run",
+    "ipa:build": "node upload-tools/build-ipa.mjs --push",
+    "ipa:verify": "python upload-tools/verify-ipa.py"
+  },
+  "dependencies": {
+    "@capacitor/core": "^7.6.10",
+    "@capacitor/filesystem": "^7.1.9"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "^7.6.10",
+    "@capacitor/ios": "^7.6.10",
+    "typescript": "^5.7.3",
+    "vite": "^6.0.7"
+  }
+}

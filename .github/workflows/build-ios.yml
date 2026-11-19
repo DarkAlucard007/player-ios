@@ -1,0 +1,279 @@
+name: 构建 App (iOS IPA)
+
+# 手动触发：Actions → 构建 App (iOS IPA) → Run workflow
+# 也可以由 upload-tools/build-ipa.mjs 通过 API 自动触发（推荐）。
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-15
+    steps:
+      - name: 拉取代码
+        uses: actions/checkout@v4
+
+      # 有 Swift 原生插件时，这个步骤能在归档前就发现低级语法错误，省一次 3 分钟的归档时间
+      - name: Swift 语法自检
+        run: |
+          for f in wifi-plugin/Sources/*/*.swift; do
+            [ -e "$f" ] || continue
+            if ! xcrun swiftc -parse "$f" 2>/tmp/swift-parse.err; then
+              echo "语法解析告警: $f"
+              cat /tmp/swift-parse.err | head -20
+            fi
+          done
+          echo "swift parse check done"
+
+      - name: 选择 Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: '16.4'
+
+      - name: 安装 Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: 安装前端依赖
+        run: npm install --no-audit --no-fund
+
+      - name: 构建网页
+        run: npm run build
+
+      # 关键校验：产物必须内联成单个 index.html。
+      # 一旦存在多个 chunk 或动态 import，真机上路径会解析错误导致功能静默失效。
+      - name: 校验网页产物自包含（单一 chunk、无动态 import）
+        run: |
+          python3 - <<'PY'
+          import re, os, glob
+          html = open('dist/index.html', encoding='utf-8').read()
+          assert '<script type="module">' in html, 'JS 没有内联进 index.html'
+          assert '<style>' in html, 'CSS 没有内联进 index.html'
+          dyn = re.findall(r'import\s*\(\s*["\'][^"\']+["\']\s*\)', html)
+          assert not dyn, '存在动态 import（真机上会 404）: %s' % dyn[:5]
+          js = glob.glob('dist/assets/*.js')
+          assert len(js) == 1, 'JS chunk 不唯一: %s' % js
+          print('自包含校验通过，单一 chunk:', os.path.basename(js[0]), len(html), 'bytes')
+          PY
+
+      - name: 从零生成 iOS 原生工程（CocoaPods 模板）
+        run: npx cap add ios --packagemanager CocoaPods
+
+      - name: 生成应用图标与启动图
+        run: node scripts/gen-ios-assets.mjs
+
+      # 版本号唯一来源：package.json；产物名由 app.config.json 的前缀 + 版本号拼出
+      - name: 读取版本号与产物名
+        id: ver
+        run: |
+          echo "APP_VERSION=$(node -p "require('./package.json').version")" >> "$GITHUB_OUTPUT"
+          echo "ARTIFACT_NAME=$(node -p "const c=require('./app.config.json');c.artifactPrefix+'-v'+require('./package.json').version+'-unsigned-ipa'")" >> "$GITHUB_OUTPUT"
+          echo "APP_PREFIX=$(node -p "require('./app.config.json').artifactPrefix")" >> "$GITHUB_OUTPUT"
+
+      # 应用信息、权限与 bundle id 全部来自 app.config.json
+      - name: 配置应用信息与权限
+        env:
+          APP_VERSION: ${{ steps.ver.outputs.APP_VERSION }}
+        run: |
+          python3 - <<'PY'
+          import os, plistlib, json
+          cfg = json.load(open('app.config.json', encoding='utf-8'))
+          p = 'ios/App/App/Info.plist'
+          with open(p, 'rb') as f:
+              d = plistlib.load(f)
+          d['CFBundleDisplayName'] = cfg.get('displayName') or cfg['appName']
+          d['CFBundleShortVersionString'] = os.environ['APP_VERSION']
+          d['CFBundleVersion'] = os.environ['APP_VERSION']
+          if cfg.get('minIOS'):
+              d['MinimumOSVersion'] = cfg['minIOS']
+          # 允许电脑与手机在同一 Wi-Fi 下传文件（文件分享/传书类功能需要）
+          d['UIFileSharingEnabled'] = True
+          d['LSSupportsOpeningDocumentsInPlace'] = True
+          if cfg.get('needsArbitraryHttp'):
+              d['NSAppTransportSecurity'] = {'NSAllowsArbitraryLoads': True}
+          # 自定义权限文案
+          for key, text in (cfg.get('permissions') or {}).items():
+              d[key] = text
+          # 自定义 Info.plist 字段
+          for key, value in (cfg.get('customPlistEntries') or {}).items():
+              d[key] = value
+          with open(p, 'wb') as f:
+              plistlib.dump(d, f)
+          print('Info.plist configured:', d['CFBundleDisplayName'], d['CFBundleShortVersionString'])
+
+          # 修正 bundle id
+          p2 = 'ios/App/App.xcodeproj/project.pbxproj'
+          s = open(p2, encoding='utf-8').read()
+          import re
+          s = re.sub(r'PRODUCT_BUNDLE_IDENTIFIER = [^;]*;',
+                     'PRODUCT_BUNDLE_IDENTIFIER = %s;' % cfg['bundleId'], s)
+          open(p2, 'w', encoding='utf-8').write(s)
+          print('bundle id set:', cfg['bundleId'])
+          PY
+
+      - name: 同步网页到原生工程
+        run: npx cap sync ios
+
+      # 关键：把原生插件类写进运行时注册表，否则真机报 plugin is not implemented
+      - name: 注册原生插件到 Capacitor 运行时
+        run: |
+          python3 - <<'PY'
+          import json
+          cfg = json.load(open('app.config.json', encoding='utf-8'))
+          names = cfg.get('nativePlugins') or []
+          p = 'ios/App/App/capacitor.config.json'
+          d = json.load(open(p, encoding='utf-8'))
+          lst = d.get('packageClassList', [])
+          for name in names:
+              if name not in lst:
+                  lst.append(name)
+          d['packageClassList'] = lst
+          with open(p, 'w', encoding='utf-8') as f:
+              json.dump(d, f, ensure_ascii=False, indent=2)
+          verify = json.load(open(p, encoding='utf-8'))
+          for name in names:
+              assert name in verify.get('packageClassList', []), 'packageClassList injection FAILED: ' + name
+          print('packageClassList:', verify['packageClassList'])
+          PY
+
+      # 有本地 pod 插件时才需要
+      - name: 注入本地 CocoaPods 插件
+        if: ${{ hashFiles('wifi-plugin/WifiTransfer.podspec') != '' }}
+        run: |
+          python3 - <<'PY'
+          import re, sys, glob
+          pf = 'ios/App/Podfile'
+          text = open(pf, encoding='utf-8').read()
+          podlines = []
+          for spec in glob.glob('wifi-plugin/*.podspec'):
+              name = spec.split('/')[-1].replace('.podspec', '')
+              podlines.append("  pod '%s', :path => '../../wifi-plugin'" % name)
+          if not podlines:
+              print('no local podspec found, skip')
+              sys.exit(0)
+          missing = [p for p in podlines if p.strip().strip("pod '") not in text]
+          if not missing:
+              print('pods already present')
+          else:
+              block = '\n'.join(missing)
+              m = re.search(r"(pod 'CapacitorCordova'[^\n]*\n)", text)
+              if m:
+                  text = text[:m.end()] + block + '\n' + text[m.end():]
+              else:
+                  idx = text.rfind('\nend')
+                  if idx == -1:
+                      print('ERROR: cannot locate insertion point', file=sys.stderr)
+                      sys.exit(1)
+                  text = text[:idx] + '\n' + block + text[idx:]
+              open(pf, 'w', encoding='utf-8').write(text)
+          verify = open(pf, encoding='utf-8').read()
+          for spec in glob.glob('wifi-plugin/*.podspec'):
+              name = spec.split('/')[-1].replace('.podspec', '')
+              assert name in verify, 'Podfile injection FAILED: ' + name
+          print('Podfile injected and verified')
+          PY
+
+      - name: 安装 CocoaPods 依赖
+        working-directory: ios/App
+        run: pod install --repo-update
+
+      - name: 校验插件已被 CocoaPods 集成
+        if: ${{ hashFiles('wifi-plugin/WifiTransfer.podspec') != '' }}
+        working-directory: ios/App
+        run: |
+          set -e
+          grep -i "WifiTransfer (1.0.0)" Podfile.lock
+          echo "WifiTransfer pod integrated OK"
+
+      - name: 关闭代码签名（产出未签名 IPA，供本地用免费 Apple ID 签名）
+        run: |
+          python3 - <<'PY'
+          import re
+          p = 'ios/App/App.xcodeproj/project.pbxproj'
+          s = open(p, encoding='utf-8').read()
+          s = re.sub(r'CODE_SIGN_STYLE = \w+;', 'CODE_SIGN_STYLE = Manual;', s)
+          s = re.sub(r'DEVELOPMENT_TEAM = [^;]*;', 'DEVELOPMENT_TEAM = "";', s)
+          s = re.sub(r'CODE_SIGN_IDENTITY = [^;]*;', 'CODE_SIGN_IDENTITY = "";', s)
+          s = re.sub(r'PROVISIONING_PROFILE_SPECIFIER = [^;]*;', 'PROVISIONING_PROFILE_SPECIFIER = "";', s)
+          if 'CODE_SIGNING_ALLOWED' not in s:
+              s = s.replace('\t\t\tbuildSettings = {\n', '\t\t\tbuildSettings = {\n\t\t\t\tCODE_SIGNING_ALLOWED = NO;\n')
+          open(p, 'w', encoding='utf-8').write(s)
+          print('signing disabled')
+          PY
+
+      - name: 归档 App
+        working-directory: ios/App
+        run: |
+          xcodebuild -workspace App.xcworkspace \
+            -scheme App \
+            -configuration Release \
+            -archivePath build/App.xcarchive \
+            CODE_SIGNING_ALLOWED=NO \
+            archive
+
+      # 关键校验：确认框架真的进了包、符号真的编进去了、配置没被改坏
+      - name: 校验归档产物
+        working-directory: ios/App
+        run: |
+          set -e
+          python3 - <<'PY'
+          import json, os, glob
+          # 注意：本步骤的 working-directory 是 ios/App，
+          # 而 app.config.json 在仓库根、归档产物在 ios/App/build 下，
+          # 所以两边都要用 GITHUB_WORKSPACE 拼绝对路径。
+          WS = os.environ.get('GITHUB_WORKSPACE', '.')
+          cfg = json.load(open(os.path.join(WS, 'app.config.json'), encoding='utf-8'))
+          app = os.path.join(WS, 'ios/App/build/App.xcarchive/Products/Applications/App.app')
+          assert os.path.isdir(app), 'archive app not found: ' + app
+
+          # 运行时注册表
+          p = os.path.join(app, 'capacitor.config.json')
+          d = json.load(open(p, encoding='utf-8'))
+          print('packageClassList:', d.get('packageClassList'))
+          for name in cfg.get('nativePlugins') or []:
+              assert name in (d.get('packageClassList') or []), name + ' NOT registered'
+
+          # 安全区：必须交给 CSS 处理，contentInset 不能是 always（否则安全区算两遍）
+          inset = (d.get('ios') or {}).get('contentInset')
+          assert inset == 'never', "ios.contentInset 应为 never，实际: %r" % inset
+          print('ios.contentInset =', inset)
+
+          # 插件 framework 符号
+          for name in cfg.get('nativePlugins') or []:
+              fw = glob.glob(os.path.join(app, 'Frameworks', name.replace('Plugin','') + '.framework', name.replace('Plugin','')))
+              print(name, 'framework:', fw)
+          for sym in cfg.get('frameworkSymbols') or []:
+              found = False
+              for fw in glob.glob(os.path.join(app, 'Frameworks', '*.framework', '*')):
+                  if os.path.isfile(fw) and not os.path.isdir(fw):
+                      try:
+                          blob = open(fw, 'rb').read()
+                      except Exception:
+                          continue
+                      if sym.encode() in blob:
+                          found = True
+                          break
+              assert found, 'MISSING SYMBOL: ' + sym
+              print('symbol OK:', sym)
+          print('archive verification OK')
+          PY
+
+      - name: 打包为未签名 IPA（带版本号）
+        env:
+          APP_VERSION: ${{ steps.ver.outputs.APP_VERSION }}
+          APP_PREFIX: ${{ steps.ver.outputs.APP_PREFIX }}
+        working-directory: ios/App
+        run: |
+          mkdir -p build/ipa/Payload
+          cp -R build/App.xcarchive/Products/Applications/App.app build/ipa/Payload/
+          cd build/ipa
+          zip -qry "../${APP_PREFIX}-v${APP_VERSION}-unsigned.ipa" Payload
+          cd ..
+          ls -lh ${APP_PREFIX}-v${APP_VERSION}-unsigned.ipa
+
+      - name: 上传 IPA 安装包
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.ver.outputs.ARTIFACT_NAME }}
+          path: ios/App/build/*.ipa
+          retention-days: 30
