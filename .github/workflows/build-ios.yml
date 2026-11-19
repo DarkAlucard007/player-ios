@@ -227,6 +227,13 @@ jobs:
             done
             exit 1
           fi
+          if [ ! -d build/App.xcarchive/Products/Applications/App.app ]; then
+            echo "::error::xcodebuild 退出 0 但 App.app 不存在，日志尾部："
+            tail -n 30 ../../xcodebuild.log | while IFS= read -r line; do
+              echo "::error::$line"
+            done
+            exit 1
+          fi
 
       # 关键校验：确认框架真的进了包、符号真的编进去了、配置没被改坏
       - name: 校验归档产物
