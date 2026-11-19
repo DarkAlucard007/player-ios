@@ -232,8 +232,8 @@ jobs:
       - name: 校验归档产物
         working-directory: ios/App
         run: |
-          set -e
-          python3 - <<'PY'
+          set -o pipefail
+          if ! python3 - <<'PY' 2>&1 | tee ../../verify.log
           import json, os, glob
           # 注意：本步骤的 working-directory 是 ios/App，
           # 而 app.config.json 在仓库根、归档产物在 ios/App/build 下，
