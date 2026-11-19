@@ -18,5 +18,6 @@ DESC
   s.source_files   = 'Sources/**/*.swift'
   s.dependency 'Capacitor'
   s.swift_version  = '5.0'
-  s.static_framework = true
+  # 注意：不要加 static_framework。use_frameworks! 下默认动态 framework 才会被
+  # 嵌入 App.app/Frameworks/（校验脚本在那里找符号）；静态链接会进主二进制导致 MISSING SYMBOL
 end
