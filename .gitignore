@@ -10,6 +10,12 @@ upload-tools/.tmp-test/
 upload-tools/sample.mp4
 upload-tools/sample.webm
 upload-tools/sample.srt
+upload-tools/.gh-*.cjs
+upload-tools/.gh-*.html
+upload-tools/.gh-*.json
+upload-tools/.run-logs*
+upload-tools/.podlog*
+upload-tools/build-run*.log
 .workbuddy/applications.yaml
 .workbuddy/*.genie
 upload-tools/chrome-profile/

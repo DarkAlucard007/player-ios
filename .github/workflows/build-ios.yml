@@ -176,16 +176,14 @@ jobs:
       - name: 安装 CocoaPods 依赖
         working-directory: ios/App
         run: |
-          pod install --repo-update 2>&1 | tee ../../pod-install.log
-          exit ${PIPESTATUS[0]}
-
-      - name: 上传 pod install 日志（失败时用于诊断）
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: pod-install-log
-          path: pod-install.log
-          retention-days: 3
+          set -o pipefail
+          if ! pod install --repo-update 2>&1 | tee ../../pod-install.log; then
+            echo "::error::pod install 失败，日志尾部如下："
+            tail -n 25 ../../pod-install.log | while IFS= read -r line; do
+              echo "::error::$line"
+            done
+            exit 1
+          fi
 
       - name: 校验插件已被 CocoaPods 集成
         if: ${{ hashFiles('media-plugin/LocalMedia.podspec') != '' }}
