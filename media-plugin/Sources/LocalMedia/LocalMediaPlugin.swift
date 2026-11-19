@@ -63,7 +63,7 @@ public class LocalMediaPlugin: CAPPlugin, CAPBridgedPlugin, WKURLSchemeHandler, 
             call.reject("no presentation anchor")
             return
         }
-        var types: [UTType] = [.movie, .video, .mpeg4Movie, .quickTimeMovie, .threeGPPMovie]
+        var types: [UTType] = [.movie, .video, .mpeg4Movie, .quickTimeMovie]
         if allowSubtitles {
             types.append(contentsOf: [.plainText, .utf8PlainText, .item])
         }
@@ -111,11 +111,11 @@ public class LocalMediaPlugin: CAPPlugin, CAPBridgedPlugin, WKURLSchemeHandler, 
         generator.appliesPreferredTrackTransform = true
         generator.maximumSize = CGSize(width: 1280, height: 1280)
         let time = CMTime(seconds: max(0, seconds), preferredTimescale: 600)
-        generator.generateCGImagesAsynchronously(forTimes: [NSValue(time: time)]) { [weak self] cgImage, _, _, _, _ in
-            guard let self else { return }
-            guard let cgImage,
-                  let image = UIImage(cgImage: cgImage, scale: 1, orientation: .up),
-                  let data = image.jpegData(compressionQuality: 0.8) else {
+        generator.generateCGImagesAsynchronously(forTimes: [NSValue(time: time)]) {
+            (image: CGImage?, _ actualTime: CMTime, _ orientation: CGImagePropertyOrientation, _ wasDegraded: Bool, _ error: Error?) in
+            guard let image,
+                  let uiImage = UIImage(cgImage: image, scale: 1, orientation: .up),
+                  let data = uiImage.jpegData(compressionQuality: 0.8) else {
                 self.resolveSaved(call.callbackId, data: ["error": "frame capture failed"])
                 return
             }
@@ -242,33 +242,41 @@ public class LocalMediaPlugin: CAPPlugin, CAPBridgedPlugin, WKURLSchemeHandler, 
         }
     }
 
+    /// WKURLSchemeTask 没有取消状态属性，用 ObjectIdentifier 集合自行跟踪
+    private var cancelledTasks = Set<ObjectIdentifier>()
+
     public func webView(_ webView: WKWebView, stop urlSchemeTask: WKURLSchemeTask) {
-        urlSchemeTask.didCancel()
+        cancelledTasks.insert(ObjectIdentifier(urlSchemeTask))
     }
 
-    private func stream(_ fileURL: URL, from start: Int64, length: Int64, task: WKURLSchemeTask) {
-        DispatchQueue.global(qos: .userInitiated).async {
+    private func stream(_ fileURL: URL, from start: Int64, length: Int64, task: any WKURLSchemeTask) {
+        let taskID = ObjectIdentifier(task)
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            guard let self else { return }
             guard let handle = try? FileHandle(forReadingFrom: fileURL) else {
                 task.didFailWithError(Self.error(500, "open failed"))
                 return
             }
-            defer { try? handle.close() }
+            defer {
+                try? handle.close()
+                self.cancelledTasks.remove(taskID)
+            }
             do {
-                try handle.seek(toOffset: start)
+                try handle.seek(toOffset: UInt64(start))
             } catch {
                 task.didFailWithError(Self.error(500, "seek failed"))
                 return
             }
             let chunk: Int64 = 256 * 1024
             var remaining = length
-            while remaining > 0 && !task.didCancel {
+            while remaining > 0 && !self.cancelledTasks.contains(taskID) {
                 let n = min(chunk, remaining)
                 let data = handle.readData(ofLength: Int(n))
                 if data.isEmpty { break }
                 task.didReceive(data)
                 remaining -= Int64(data.count)
             }
-            if !task.didCancel {
+            if !self.cancelledTasks.contains(taskID) {
                 task.didFinish()
             }
         }
