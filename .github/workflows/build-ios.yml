@@ -212,12 +212,21 @@ jobs:
       - name: 归档 App
         working-directory: ios/App
         run: |
-          xcodebuild -workspace App.xcworkspace \
+          if ! xcodebuild -workspace App.xcworkspace \
             -scheme App \
             -configuration Release \
             -archivePath build/App.xcarchive \
             CODE_SIGNING_ALLOWED=NO \
-            archive
+            archive 2>&1 | tee ../../xcodebuild.log; then
+            echo "::error::xcodebuild 归档失败，error 行如下："
+            grep -E "error:|fatal error" ../../xcodebuild.log | head -n 30 | while IFS= read -r line; do
+              echo "::error::$line"
+            done
+            tail -n 15 ../../xcodebuild.log | while IFS= read -r line; do
+              echo "::error::$line"
+            done
+            exit 1
+          fi
 
       # 关键校验：确认框架真的进了包、符号真的编进去了、配置没被改坏
       - name: 校验归档产物
