@@ -31,16 +31,27 @@ function chunk(type, data) {
   return Buffer.concat([len, body, crc]);
 }
 
+// 播放三角图标：深色渐变底 + 白色播放三角（512 坐标系）
+const TRI = [[196, 140], [196, 372], [392, 256]];
+function cross(o, a, b) {
+  return (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]);
+}
+function inTriangle(u, v) {
+  const p = [u, v];
+  const s1 = cross(TRI[0], TRI[1], p);
+  const s2 = cross(TRI[1], TRI[2], p);
+  const s3 = cross(TRI[2], TRI[0], p);
+  const hasNeg = s1 < 0 || s2 < 0 || s3 < 0;
+  const hasPos = s1 > 0 || s2 > 0 || s3 > 0;
+  return !(hasNeg && hasPos);
+}
+
 function pixel(x, y, size) {
   const u = (x / size) * 512;
   const v = (y / size) * 512;
-  const bg = [47 + Math.round((v / 512) * 10), 111 + Math.round((v / 512) * 8), 94];
-  const inRect = (x1, y1, x2, y2) => u >= x1 && u < x2 && v >= y1 && v < y2;
-  if (inRect(112, 132, 240, 360)) return [244, 234, 214];
-  if (inRect(272, 132, 400, 360)) return [255, 250, 240];
-  if (inRect(251, 152, 261, 380)) return [47, 111, 94];
-  if (inRect(136, 182, 224, 190) || inRect(136, 216, 224, 224)) return [168, 155, 132];
-  if (inRect(288, 182, 376, 190) || inRect(288, 216, 376, 224)) return [168, 155, 132];
+  const t = v / 512;
+  const bg = [Math.round(30 + t * -14), Math.round(41 + t * -19), Math.round(59 + t * -21)];
+  if (inTriangle(u, v)) return [255, 255, 255];
   return bg;
 }
 

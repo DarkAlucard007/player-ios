@@ -15,7 +15,7 @@ jobs:
       # 有 Swift 原生插件时，这个步骤能在归档前就发现低级语法错误，省一次 3 分钟的归档时间
       - name: Swift 语法自检
         run: |
-          for f in wifi-plugin/Sources/*/*.swift; do
+          for f in media-plugin/Sources/*/*.swift; do
             [ -e "$f" ] || continue
             if ! xcrun swiftc -parse "$f" 2>/tmp/swift-parse.err; then
               echo "语法解析告警: $f"
@@ -138,16 +138,16 @@ jobs:
 
       # 有本地 pod 插件时才需要
       - name: 注入本地 CocoaPods 插件
-        if: ${{ hashFiles('wifi-plugin/WifiTransfer.podspec') != '' }}
+        if: ${{ hashFiles('media-plugin/LocalMedia.podspec') != '' }}
         run: |
           python3 - <<'PY'
           import re, sys, glob
           pf = 'ios/App/Podfile'
           text = open(pf, encoding='utf-8').read()
           podlines = []
-          for spec in glob.glob('wifi-plugin/*.podspec'):
+          for spec in glob.glob('media-plugin/*.podspec'):
               name = spec.split('/')[-1].replace('.podspec', '')
-              podlines.append("  pod '%s', :path => '../../wifi-plugin'" % name)
+              podlines.append("  pod '%s', :path => '../../media-plugin'" % name)
           if not podlines:
               print('no local podspec found, skip')
               sys.exit(0)
@@ -167,7 +167,7 @@ jobs:
                   text = text[:idx] + '\n' + block + text[idx:]
               open(pf, 'w', encoding='utf-8').write(text)
           verify = open(pf, encoding='utf-8').read()
-          for spec in glob.glob('wifi-plugin/*.podspec'):
+          for spec in glob.glob('media-plugin/*.podspec'):
               name = spec.split('/')[-1].replace('.podspec', '')
               assert name in verify, 'Podfile injection FAILED: ' + name
           print('Podfile injected and verified')
@@ -178,12 +178,12 @@ jobs:
         run: pod install --repo-update
 
       - name: 校验插件已被 CocoaPods 集成
-        if: ${{ hashFiles('wifi-plugin/WifiTransfer.podspec') != '' }}
+        if: ${{ hashFiles('media-plugin/LocalMedia.podspec') != '' }}
         working-directory: ios/App
         run: |
           set -e
-          grep -i "WifiTransfer (1.0.0)" Podfile.lock
-          echo "WifiTransfer pod integrated OK"
+          grep -i "LocalMedia (1.0.0)" Podfile.lock
+          echo "LocalMedia pod integrated OK"
 
       - name: 关闭代码签名（产出未签名 IPA，供本地用免费 Apple ID 签名）
         run: |

@@ -3,8 +3,13 @@ dist/
 data/
 downloads/
 ios/
+.npm-cache/
 .DS_Store
 *.log
+upload-tools/.tmp-test/
+upload-tools/sample.mp4
+upload-tools/sample.webm
+upload-tools/sample.srt
 .workbuddy/applications.yaml
 .workbuddy/*.genie
 upload-tools/chrome-profile/

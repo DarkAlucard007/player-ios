@@ -1,15 +1,21 @@
 {
   "appName": "视频播放器",
+  "displayName": "视频播放器",
   "appId": "com.alucard.player",
   "bundleId": "com.alucard.player",
   "artifactPrefix": "player",
   "repo": "DarkAlucard007/player-ios",
   "minIOS": "14.0",
-  "displayName": "视频播放器",
-  "nativePlugins": [],
-  "frameworkSymbols": [],
+  "nativePlugins": [
+    "LocalMediaPlugin"
+  ],
+  "frameworkSymbols": [
+    "LocalMediaPlugin"
+  ],
   "webDir": "dist",
-  "needsArbitraryHttp": false,
+  "needsArbitraryHttp": true,
   "customPlistEntries": {},
-  "permissions": {}
+  "permissions": {
+    "NSPhotoLibraryAddUsageDescription": "用于把视频截图保存到系统相册"
+  }
 }

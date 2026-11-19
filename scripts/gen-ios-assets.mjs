@@ -52,30 +52,39 @@ function png(size, pixelFn) {
   ]);
 }
 
-// 书本图标（与 public 图标一致），缩放到任意尺寸
+// 播放三角（512 坐标系），与 public 图标一致
+const TRI = [[196, 140], [196, 372], [392, 256]];
+function cross(o, a, b) {
+  return (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]);
+}
+function inTriangle(u, v) {
+  const p = [u, v];
+  const s1 = cross(TRI[0], TRI[1], p);
+  const s2 = cross(TRI[1], TRI[2], p);
+  const s3 = cross(TRI[2], TRI[0], p);
+  const hasNeg = s1 < 0 || s2 < 0 || s3 < 0;
+  const hasPos = s1 > 0 || s2 > 0 || s3 > 0;
+  return !(hasNeg && hasPos);
+}
+
 function iconPixel(x, y, size) {
   const u = (x / size) * 512;
   const v = (y / size) * 512;
-  const bg = [47 + Math.round((v / 512) * 10), 111 + Math.round((v / 512) * 8), 94];
-  const inRect = (x1, y1, x2, y2) => u >= x1 && u < x2 && v >= y1 && v < y2;
-  if (inRect(112, 132, 240, 360)) return [244, 234, 214];
-  if (inRect(272, 132, 400, 360)) return [255, 250, 240];
-  if (inRect(251, 152, 261, 380)) return [47, 111, 94];
-  if (inRect(136, 182, 224, 190) || inRect(136, 216, 224, 224)) return [168, 155, 132];
-  if (inRect(288, 182, 376, 190) || inRect(288, 216, 376, 224)) return [168, 155, 132];
+  const t = v / 512;
+  const bg = [Math.round(30 + t * -14), Math.round(41 + t * -19), Math.round(59 + t * -21)];
+  if (inTriangle(u, v)) return [255, 255, 255];
   return bg;
 }
 
-// 启动图：米色底 + 中央书本，居中留白
+// 启动图：深色底 + 中央小播放三角
 function splashPixel(x, y, size) {
   const cx = size / 2;
   const cy = size / 2;
-  const half = size * 0.14;
-  const inRect = (x1, y1, x2, y2) => x >= cx + x1 * half && x < cx + x2 * half && y >= cy + y1 * half && y < cy + y2 * half;
-  if (inRect(-1.0, -0.95, -0.05, 0.95)) return [244, 234, 214];
-  if (inRect(0.05, -0.95, 1.0, 0.95)) return [255, 250, 240];
-  if (inRect(-0.02, -0.85, 0.02, 1.0)) return [47, 111, 94];
-  return [247, 243, 234];
+  const half = size * 0.16;
+  const u = ((x - cx) / half) * 256 + 256;
+  const v = ((y - cy) / half) * 256 + 256;
+  if (inTriangle(u, v)) return [255, 255, 255];
+  return [15, 23, 42];
 }
 
 const appIconDir = path.join(ASSETS, 'AppIcon.appiconset');
@@ -90,12 +99,12 @@ for (const name of ['splash-2732x2732.png', 'splash-2732x2732-1.png', 'splash-27
   console.log('generated', name, '(2732x2732)');
 }
 
-// 修正 LaunchScreen 背景色为米色
+// 修正 LaunchScreen 背景色为深色（#0f172a）
 const launchPath = path.join(ROOT, 'ios', 'App', 'App', 'Base.lproj', 'LaunchScreen.storyboard');
 if (fs.existsSync(launchPath)) {
   let sb = fs.readFileSync(launchPath, 'utf8');
   sb = sb.replace(/<color key="backgroundColor" systemColor="systemBackgroundColor"\/>/g,
-    '<color key="backgroundColor" red="0.96862745098039216" green="0.95294117647058818" blue="0.91764705882352937" alpha="1" colorSpace="custom" customColorSpace="sRGB"/>');
+    '<color key="backgroundColor" red="0.058823529411764705" green="0.090196078431372548" blue="0.16470588235294117" alpha="1" colorSpace="custom" customColorSpace="sRGB"/>');
   fs.writeFileSync(launchPath, sb);
   console.log('patched LaunchScreen background');
 }
