@@ -13,7 +13,7 @@ DESC
   s.license      = { :type => 'MIT', :file => 'LICENSE' }
   s.author       = { 'Alucard' => 'dev@alucard.local' }
   s.platform     = :ios, '14.0'
-  s.source       = { :git => 'https://github.com/DarkAlucard007/player-ios.git', :tag => s.version.to_s }
+  # 本地 :path 开发 pod 不需要 s.source（指向不存在的 git tag 会导致 pod install 校验失败）
   s.source_files = 'Sources/**/*.swift'
   s.dependency   = 'Capacitor'
   s.swift_version = '5.0'
