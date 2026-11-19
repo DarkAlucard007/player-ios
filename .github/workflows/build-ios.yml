@@ -228,8 +228,13 @@ jobs:
             exit 1
           fi
           if [ ! -d build/App.xcarchive/Products/Applications/App.app ]; then
-            echo "::error::xcodebuild 退出 0 但 App.app 不存在，日志尾部："
-            tail -n 30 ../../xcodebuild.log | while IFS= read -r line; do
+            echo "::error::App.app 不存在。日志总行数：$(wc -l < ../../xcodebuild.log)"
+            echo "::error::关键行："
+            grep -nE "Archive complete|BUILD SUCCEEDED|BUILD FAILED|The following build commands failed|error:|Command .* failed|Archiving workspace|Creating archive" ../../xcodebuild.log | head -n 20 | while IFS= read -r line; do
+              echo "::error::$line"
+            done
+            echo "::error::日志最后 10 行："
+            tail -n 10 ../../xcodebuild.log | while IFS= read -r line; do
               echo "::error::$line"
             done
             exit 1
