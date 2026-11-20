@@ -16,7 +16,7 @@ import Photos
 import UniformTypeIdentifiers
 
 @objc(LocalMediaPlugin)
-public class LocalMediaPlugin: CAPPlugin, CAPBridgedPlugin, WKURLSchemeHandler, UIDocumentPickerDelegate, UIDocumentBrowserDelegate {
+public class LocalMediaPlugin: CAPPlugin, CAPBridgedPlugin, WKURLSchemeHandler, UIDocumentPickerDelegate, UIDocumentBrowserViewControllerDelegate {
 
     // MARK: - CAPBridgedPlugin（Capacitor 7 自动发现，类名必须与 packageClassList 一致）
 
@@ -151,8 +151,8 @@ public class LocalMediaPlugin: CAPPlugin, CAPBridgedPlugin, WKURLSchemeHandler, 
         browser.delegate = self
         browser.allowsDocumentCreation = false
         browser.allowsDocumentDeletion = false
-        browser.allowsRenamingDocuments = false
-        browser.allowsMovingDocuments = false
+        browser.allowsDocumentRenaming = false
+        browser.allowsDocumentMoving = false
         smbBrowser = browser
         bridge?.saveCall(call)
         pendingSMBBrowseId = call.callbackId
