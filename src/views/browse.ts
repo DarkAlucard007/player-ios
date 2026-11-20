@@ -335,20 +335,24 @@ function renderSMBBrowser(body: HTMLElement, source: Source): void {
     <div id="smb-files" class="br-items"></div>
   `;
   body.querySelector('#smb-back')!.addEventListener('click', () => nav('#/browse'));
-  body.querySelector('.smb-pick')!.addEventListener('click', () => void doBrowseSMB(body));
+  body.querySelector('.smb-pick')!.addEventListener('click', () => void doBrowseSMB(body, source));
   void refreshSMBFiles(body);
 }
 
-async function doBrowseSMB(body: HTMLElement): Promise<void> {
-  toast('在弹出的浏览器里点你的 NAS，进入共享文件夹，点视频播放');
-  const files = await browseSMB();
-  if (files.length === 0) {
-    toast('未选择视频');
+async function doBrowseSMB(body: HTMLElement, source: Source): Promise<void> {
+  toast('正在进入 NAS…');
+  const res = await browseSMB({ host: source.host, port: source.port, share: source.share });
+  if (res.files.length === 0) {
+    if (res.error) {
+      toast('进入 NAS 失败：' + res.error + '。请确认「文件」App 里已注册这台 SMB 服务器且能打开');
+    } else {
+      toast('未选择视频');
+    }
     return;
   }
   await refreshSMBFiles(body);
   // 点中即播：直接打开用户选中的视频
-  openPlayer('smb:' + files[0].name);
+  openPlayer('smb:' + res.files[0].name);
 }
 
 async function refreshSMBFiles(body: HTMLElement): Promise<void> {

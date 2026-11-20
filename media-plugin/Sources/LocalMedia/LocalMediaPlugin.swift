@@ -95,6 +95,9 @@ public class LocalMediaPlugin: CAPPlugin, CAPBridgedPlugin, WKURLSchemeHandler, 
     /// 当前展示的文档浏览器（用于点中视频后整体关闭）
     private var smbBrowser: UIDocumentBrowserViewController?
 
+    /// 本次浏览要直连的共享目录（smb://host[:port]/share）
+    private var smbRootURL: URL?
+
     /// SMB 会话文件：名称 → 安全作用域 URL（保持 startAccessing 直到 release）
     private var smbFiles: [String: URL] = [:]
 
@@ -192,22 +195,38 @@ public class LocalMediaPlugin: CAPPlugin, CAPBridgedPlugin, WKURLSchemeHandler, 
     // MARK: - SMB（系统文档浏览器：进入 NAS 目录树浏览，点中视频即流式播放）
 
     @objc func browseSMB(_ call: CAPPluginCall) {
-        Log.write("browseSMB 开始")
+        let host = call.options["host"] as? String ?? ""
+        let port = (call.options["port"] as? NSNumber)?.stringValue ?? ""
+        let share = call.options["share"] as? String ?? ""
+        Log.write("browseSMB 开始 host=\(host) port=\(port) share=\(share)")
+        guard !host.isEmpty else {
+            Log.write("browseSMB 失败：缺少 host")
+            call.reject("missing host")
+            return
+        }
         guard let anchor = presentingAnchor() else {
             Log.write("browseSMB 失败：无展示锚点")
             call.reject("no presentation anchor")
             return
         }
-        Log.write("browseSMB 锚点=\(type(of: anchor))，创建文档浏览器")
-        // UIDocumentBrowserViewController：系统级目录浏览器，
-        // 会列出「文件」App 里注册过的 SMB 服务器，可逐层进入文件夹
+        // 直连 smb://host[:port]/share —— 跳过系统「全部位置」枚举
+        //（枚举会拉起手机上所有 Files 扩展，其中一个会把展示流程带崩，v1.1.0/1.1.1 闪退根因）
+        var urlString = "smb://" + host
+        if !port.isEmpty, let p = Int(port), p > 0 { urlString += ":" + String(p) }
+        urlString += "/" + share
+        guard let smbURL = URL(string: urlString) else {
+            call.reject("bad smb url: \(urlString)")
+            return
+        }
+        smbRootURL = smbURL
+        Log.write("browseSMB 锚点=\(type(of: anchor))，直连 \(urlString)")
         let browser = UIDocumentBrowserViewController()
         browser.delegate = self
         // 创建/删除/重命名/移动默认都是 false，正好只要「浏览 + 打开」
         smbBrowser = browser
         bridge?.saveCall(call)
         pendingSMBBrowseId = call.callbackId
-        Log.write("browseSMB 调用 present(animated:) …（之后若闪退，日志到此为止）")
+        Log.write("browseSMB 调用 present(animated:) …")
         anchor.present(browser, animated: true)
         Log.write("browseSMB present 返回，浏览器已展示")
     }
@@ -327,12 +346,31 @@ public class LocalMediaPlugin: CAPPlugin, CAPBridgedPlugin, WKURLSchemeHandler, 
 
     // MARK: - UIDocumentBrowserDelegate（SMB 目录浏览）
 
-    /// 首次进入：返回 nil 让系统显示全部位置（含已注册的 SMB 服务器）
+    /// 首次进入：直接给出 smb:// 共享地址 → 浏览器钻进共享目录，不枚举全部位置
     public func documentBrowser(_ controller: UIDocumentBrowserViewController,
                                 initialURLsForListingIn bookmarkData: Data,
                                 completionHandler: @escaping ([URL]?, Error?) -> Void) {
-        Log.write("documentBrowser 请求初始目录（显示全部位置）")
-        completionHandler(nil, nil)
+        if let root = smbRootURL {
+            Log.write("documentBrowser 直连共享目录 \(root)")
+            completionHandler([root], nil)
+        } else {
+            Log.write("documentBrowser 无直连地址，回退显示全部位置")
+            completionHandler(nil, nil)
+        }
+    }
+
+    /// 读取目录失败（smb:// 不被识别 / 认证失败 / 网络不通）→ 通知 JS 显示指引
+    public func documentBrowser(_ controller: UIDocumentBrowserViewController,
+                                didFailToReadDirectoryContentsOf url: URL,
+                                withError error: Error) {
+        Log.write("documentBrowser 读目录失败 \(url) error=\(error.localizedDescription)")
+        controller.dismiss(animated: true)
+        if let id = pendingSMBBrowseId {
+            resolveSaved(id, data: ["files": [], "error": error.localizedDescription])
+            pendingSMBBrowseId = nil
+        }
+        smbBrowser = nil
+        smbRootURL = nil
     }
 
     /// 点中文件 → 返回预览页（视频显示「播放」按钮，点一下就登记并播放）

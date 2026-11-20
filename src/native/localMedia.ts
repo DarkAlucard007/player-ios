@@ -23,7 +23,7 @@ interface LocalMediaPluginInterface {
   clearCache(): Promise<{ ok: boolean }>;
   captureFrame(options: { name: string; time: number }): Promise<{ image?: string; error?: string }>;
   saveImageToPhotos(options: { image: string }): Promise<{ ok: boolean }>;
-  browseSMB(): Promise<{ files: PickedFile[] }>;
+  browseSMB(options: { host: string; port: string; share: string }): Promise<{ files: PickedFile[]; error?: string }>;
   listSMBFiles(): Promise<{ files: LocalFileInfo[] }>;
   releaseSMBFile(options: { name: string }): Promise<{ ok: boolean }>;
   readLog(): Promise<{ log: string }>;
@@ -50,15 +50,25 @@ export function smbUrl(name: string): string | null {
   return null;
 }
 
-/** 打开系统文档浏览器进入 NAS 目录树浏览（需先在「文件」App 注册过 SMB 服务器）。
+export interface SMBBrowseResult {
+  files: PickedFile[];
+  /** 直连失败时的错误信息（smb:// 不被识别 / 认证失败 / 网络不通） */
+  error?: string;
+}
+
+/** 打开系统文档浏览器直连 smb://host/share 进入 NAS 目录树。
  *  用户在浏览器里点中视频并确认后返回该文件；取消返回空。浏览器模式返回空。 */
-export async function browseSMB(): Promise<PickedFile[]> {
-  if (!isNative) return [];
+export async function browseSMB(opts: { host: string; port?: string; share?: string }): Promise<SMBBrowseResult> {
+  if (!isNative) return { files: [] };
   try {
-    const res = await LocalMedia.browseSMB();
-    return res.files;
-  } catch {
-    return [];
+    const res = await LocalMedia.browseSMB({
+      host: opts.host,
+      port: opts.port ?? '',
+      share: opts.share ?? ''
+    });
+    return { files: res.files, error: res.error };
+  } catch (e) {
+    return { files: [], error: String(e) };
   }
 }
 
