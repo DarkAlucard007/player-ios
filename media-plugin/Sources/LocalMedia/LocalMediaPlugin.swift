@@ -149,10 +149,7 @@ public class LocalMediaPlugin: CAPPlugin, CAPBridgedPlugin, WKURLSchemeHandler, 
         // 会列出「文件」App 里注册过的 SMB 服务器，可逐层进入文件夹
         let browser = UIDocumentBrowserViewController()
         browser.delegate = self
-        browser.allowsDocumentCreation = false
-        browser.allowsDocumentDeletion = false
-        browser.allowsDocumentRenaming = false
-        browser.allowsDocumentMoving = false
+        // 创建/删除/重命名/移动默认都是 false，正好只要「浏览 + 打开」
         smbBrowser = browser
         bridge?.saveCall(call)
         pendingSMBBrowseId = call.callbackId
