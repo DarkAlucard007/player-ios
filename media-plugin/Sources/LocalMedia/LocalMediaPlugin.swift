@@ -30,6 +30,7 @@ public class LocalMediaPlugin: CAPPlugin, CAPBridgedPlugin, WKURLSchemeHandler, 
         CAPPluginMethod(name: "captureFrame", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "saveImageToPhotos", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "browseSMB", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "testBrowserLocal", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "listSMBFiles", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "releaseSMBFile", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "readLog", returnType: CAPPluginReturnPromise),
@@ -97,6 +98,9 @@ public class LocalMediaPlugin: CAPPlugin, CAPBridgedPlugin, WKURLSchemeHandler, 
 
     /// 本次浏览要直连的共享目录（smb://host[:port]/share）
     private var smbRootURL: URL?
+
+    /// 测试模式：文档浏览器打开本地目录（不碰 SMB），用于二分定位崩溃源
+    private var smbTestMode = false
 
     /// SMB 会话文件：名称 → 安全作用域 URL（保持 startAccessing 直到 release）
     private var smbFiles: [String: URL] = [:]
@@ -209,6 +213,11 @@ public class LocalMediaPlugin: CAPPlugin, CAPBridgedPlugin, WKURLSchemeHandler, 
             call.reject("no presentation anchor")
             return
         }
+        guard !share.isEmpty else {
+            Log.write("browseSMB 失败：共享文件夹名为空")
+            call.reject("missing share（请在添加源时填写共享文件夹名，例如 video）")
+            return
+        }
         // 直连 smb://host[:port]/share —— 跳过系统「全部位置」枚举
         //（枚举会拉起手机上所有 Files 扩展，其中一个会把展示流程带崩，v1.1.0/1.1.1 闪退根因）
         var urlString = "smb://" + host
@@ -229,6 +238,27 @@ public class LocalMediaPlugin: CAPPlugin, CAPBridgedPlugin, WKURLSchemeHandler, 
         Log.write("browseSMB 调用 present(animated:) …")
         anchor.present(browser, animated: true)
         Log.write("browseSMB present 返回，浏览器已展示")
+    }
+
+    /// 诊断用：文档浏览器打开 App 自己的本地目录（完全不碰 SMB）。
+    /// 若此按钮也闪退 → 文档浏览器在这个 App 上下文里本身就崩；不闪退 → 系统 SMB 组件的问题。
+    @objc func testBrowserLocal(_ call: CAPPluginCall) {
+        Log.write("testBrowserLocal 开始（本地目录，无 SMB）")
+        guard let anchor = presentingAnchor() else {
+            call.reject("no presentation anchor")
+            return
+        }
+        let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        smbRootURL = docs
+        smbTestMode = true
+        Log.write("testBrowserLocal 锚点=\(type(of: anchor))，直连 \(docs.path)")
+        let browser = UIDocumentBrowserViewController()
+        browser.delegate = self
+        smbBrowser = browser
+        bridge?.saveCall(call)
+        pendingSMBBrowseId = call.callbackId
+        anchor.present(browser, animated: true)
+        Log.write("testBrowserLocal present 返回")
     }
 
     /// 展示锚点：优先 key window 里最上层的 VC（其 view 一定在 window 里），
@@ -376,6 +406,10 @@ public class LocalMediaPlugin: CAPPlugin, CAPBridgedPlugin, WKURLSchemeHandler, 
     /// 点中文件 → 返回预览页（视频显示「播放」按钮，点一下就登记并播放）
     public func documentBrowser(_ controller: UIDocumentBrowserViewController,
                                 previewViewControllerFor url: URL) async -> (UIViewController?, Error?) {
+        if smbTestMode {
+            Log.write("documentBrowser [测试模式] 点中本地文件 \(url.lastPathComponent)（仅日志，不播放）")
+            return (nil, nil)
+        }
         Log.write("documentBrowser 点中文件 \(url.lastPathComponent)")
         let isVideo = Self.videoExts.contains(url.pathExtension.lowercased())
         let vc = SMBPreviewViewController(fileName: url.lastPathComponent, isVideo: isVideo) { [weak self] in

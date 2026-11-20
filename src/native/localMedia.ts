@@ -24,6 +24,7 @@ interface LocalMediaPluginInterface {
   captureFrame(options: { name: string; time: number }): Promise<{ image?: string; error?: string }>;
   saveImageToPhotos(options: { image: string }): Promise<{ ok: boolean }>;
   browseSMB(options: { host: string; port: string; share: string }): Promise<{ files: PickedFile[]; error?: string }>;
+  testBrowserLocal(): Promise<{ files: PickedFile[]; error?: string }>;
   listSMBFiles(): Promise<{ files: LocalFileInfo[] }>;
   releaseSMBFile(options: { name: string }): Promise<{ ok: boolean }>;
   readLog(): Promise<{ log: string }>;
@@ -177,6 +178,19 @@ export async function saveImageToPhotos(base64: string): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+/** 诊断：文档浏览器打开本地目录（不碰 SMB）。关闭浏览器（不选文件）时 10 分钟超时兜底。 */
+export async function testBrowserLocal(): Promise<SMBBrowseResult> {
+  if (!isNative) return { files: [] };
+  const timeout = new Promise<SMBBrowseResult>((resolve) =>
+    setTimeout(() => resolve({ files: [], error: 'timeout' }), 600000)
+  );
+  const call = LocalMedia.testBrowserLocal().then(
+    (res) => ({ files: res.files, error: res.error }),
+    (e: unknown) => ({ files: [], error: String(e) })
+  );
+  return Promise.race([call, timeout]);
 }
 
 /** 读取原生调试日志（最后 400 行；闪退后重启 App 日志依然存活） */

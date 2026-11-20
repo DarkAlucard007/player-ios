@@ -7,7 +7,7 @@ import { openPlayer } from '../player/player';
 import { nav } from '../router';
 import { confirmDialog, modal, promptDialog, toast } from '../components/ui';
 import { fmtSize, escapeHtml, isVideoName } from '../core/util';
-import { browseSMB, listSMBFiles } from '../native/localMedia';
+import { browseSMB, listSMBFiles, testBrowserLocal } from '../native/localMedia';
 
 export function renderBrowse(el: HTMLElement, hash: string): void {
   const query = new URLSearchParams(hash.split('?')[1] || '');
@@ -127,7 +127,7 @@ function showAddSource(): void {
         <input id="f-smb-user" type="text" placeholder="例如 Alucard" />
         <label>密码</label>
         <input id="f-smb-pass" type="password" placeholder="NAS 账号密码" />
-        <label>共享文件夹名</label>
+        <label>共享文件夹名（必填）</label>
         <input id="f-smb-share" type="text" placeholder="例如 video（\\\\IP\\video 里的 video）" />
       </div>
       <div id="f-ms" style="display:none">
@@ -206,6 +206,10 @@ function showAddSource(): void {
     const src = readForm();
     if (!src.host) {
       wrap.querySelector('#f-status')!.textContent = '请先填写地址';
+      return;
+    }
+    if (src.type === 'smb' && !src.share) {
+      wrap.querySelector('#f-status')!.textContent = '请填写共享文件夹名（你的情况是 video）';
       return;
     }
     addSource(src);
@@ -332,11 +336,27 @@ function renderSMBBrowser(body: HTMLElement, source: Source): void {
       <p class="smb-note">对应 Windows 路径 \\\\${escapeHtml(source.host)}\\${escapeHtml(source.share || 'video')} 。视频直接从 NAS 流式播放，不占手机存储。</p>
     </div>
     <button class="app-btn primary smb-pick">📂 进入 NAS 浏览</button>
+    <button class="app-btn smb-test" style="margin-top:8px;width:100%">🧪 测试本地目录（闪退诊断，不碰 NAS）</button>
     <div id="smb-files" class="br-items"></div>
   `;
   body.querySelector('#smb-back')!.addEventListener('click', () => nav('#/browse'));
   body.querySelector('.smb-pick')!.addEventListener('click', () => void doBrowseSMB(body, source));
+  body.querySelector('.smb-test')!.addEventListener('click', () => void doTestLocal(source));
   void refreshSMBFiles(body);
+}
+
+/** 闪退诊断：同一个文档浏览器打开 App 本地目录。
+ *  不闪退 → 文档浏览器本身可用，问题在系统 SMB 组件；闪退 → 文档浏览器在这个 App 里本身就崩。 */
+async function doTestLocal(_source: Source): Promise<void> {
+  toast('测试模式：弹出的浏览器里随便点点，然后返回关闭');
+  const res = await testBrowserLocal();
+  if (res.error === 'timeout') {
+    toast('✓ 本地目录测试通过（未闪退）。问题定位在系统 SMB 组件，不是文档浏览器本身');
+  } else if (res.error) {
+    toast('测试出错：' + res.error);
+  } else {
+    toast('✓ 本地目录测试通过（未闪退）。问题定位在系统 SMB 组件，不是文档浏览器本身');
+  }
 }
 
 async function doBrowseSMB(body: HTMLElement, source: Source): Promise<void> {
