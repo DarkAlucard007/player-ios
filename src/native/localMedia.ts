@@ -23,7 +23,7 @@ interface LocalMediaPluginInterface {
   clearCache(): Promise<{ ok: boolean }>;
   captureFrame(options: { name: string; time: number }): Promise<{ image?: string; error?: string }>;
   saveImageToPhotos(options: { image: string }): Promise<{ ok: boolean }>;
-  pickSMB(): Promise<{ files: PickedFile[] }>;
+  browseSMB(): Promise<{ files: PickedFile[] }>;
   listSMBFiles(): Promise<{ files: LocalFileInfo[] }>;
   releaseSMBFile(options: { name: string }): Promise<{ ok: boolean }>;
 }
@@ -48,11 +48,12 @@ export function smbUrl(name: string): string | null {
   return null;
 }
 
-/** 打开系统文件选择器选 SMB 视频（需先在「文件」App 注册过 SMB 服务器）。浏览器模式返回空。 */
-export async function pickSMB(): Promise<PickedFile[]> {
+/** 打开系统文档浏览器进入 NAS 目录树浏览（需先在「文件」App 注册过 SMB 服务器）。
+ *  用户在浏览器里点中视频并确认后返回该文件；取消返回空。浏览器模式返回空。 */
+export async function browseSMB(): Promise<PickedFile[]> {
   if (!isNative) return [];
   try {
-    const res = await LocalMedia.pickSMB();
+    const res = await LocalMedia.browseSMB();
     return res.files;
   } catch {
     return [];

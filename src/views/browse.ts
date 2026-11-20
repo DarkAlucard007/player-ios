@@ -7,7 +7,7 @@ import { openPlayer } from '../player/player';
 import { nav } from '../router';
 import { confirmDialog, modal, promptDialog, toast } from '../components/ui';
 import { fmtSize, escapeHtml, isVideoName } from '../core/util';
-import { pickSMB, listSMBFiles } from '../native/localMedia';
+import { browseSMB, listSMBFiles } from '../native/localMedia';
 
 export function renderBrowse(el: HTMLElement, hash: string): void {
   const query = new URLSearchParams(hash.split('?')[1] || '');
@@ -331,23 +331,24 @@ function renderSMBBrowser(body: HTMLElement, source: Source): void {
       </div>
       <p class="smb-note">对应 Windows 路径 \\\\${escapeHtml(source.host)}\\${escapeHtml(source.share || 'video')} 。视频直接从 NAS 流式播放，不占手机存储。</p>
     </div>
-    <button class="app-btn primary smb-pick">📂 选择视频（系统选择器）</button>
+    <button class="app-btn primary smb-pick">📂 进入 NAS 浏览</button>
     <div id="smb-files" class="br-items"></div>
   `;
   body.querySelector('#smb-back')!.addEventListener('click', () => nav('#/browse'));
-  body.querySelector('.smb-pick')!.addEventListener('click', () => void doPickSMB(body));
+  body.querySelector('.smb-pick')!.addEventListener('click', () => void doBrowseSMB(body));
   void refreshSMBFiles(body);
 }
 
-async function doPickSMB(body: HTMLElement): Promise<void> {
-  toast('在弹出的选择器里找到 NAS 共享，点选视频（可多选）');
-  const files = await pickSMB();
+async function doBrowseSMB(body: HTMLElement): Promise<void> {
+  toast('在弹出的浏览器里点你的 NAS，进入共享文件夹，点视频播放');
+  const files = await browseSMB();
   if (files.length === 0) {
-    toast('未选择文件');
+    toast('未选择视频');
     return;
   }
-  toast(`已选择 ${files.length} 个视频，直接点播放`);
   await refreshSMBFiles(body);
+  // 点中即播：直接打开用户选中的视频
+  openPlayer('smb:' + files[0].name);
 }
 
 async function refreshSMBFiles(body: HTMLElement): Promise<void> {
@@ -356,7 +357,7 @@ async function refreshSMBFiles(body: HTMLElement): Promise<void> {
   const files = await listSMBFiles();
   box.innerHTML = '';
   if (files.length === 0) {
-    box.innerHTML = '<div class="loading">还没有选择视频。点上面按钮，在系统选择器里从 NAS 共享挑视频。</div>';
+    box.innerHTML = '<div class="loading">还没播放过视频。点上面按钮进入 NAS，浏览文件夹，点视频即播。</div>';
     return;
   }
   for (const f of files) {
