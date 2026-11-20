@@ -1,9 +1,9 @@
 // 设置：默认倍速 / 自动连播 / 字幕样式 / 清空缓存 / 关于
 
 import { state, setSettings, clearLibrary } from '../core/store';
-import { clearLocalCache, isNative } from '../native/localMedia';
-import { confirmDialog, toast } from '../components/ui';
-import { fmtSize } from '../core/util';
+import { clearLocalCache, isNative, readLog, clearLog } from '../native/localMedia';
+import { confirmDialog, toast, modal } from '../components/ui';
+import { fmtSize, escapeHtml } from '../core/util';
 
 const SPEEDS = [0.5, 0.75, 1, 1.25, 1.5, 2, 3];
 
@@ -46,9 +46,17 @@ export function renderSettings(el: HTMLElement): void {
       <button class="app-btn danger" id="set-clear">清空本地缓存</button>
     </div>
     <div class="set-group">
+      <h3>调试日志（闪退排查用）</h3>
+      <p class="set-about">点「查看日志」读取 App 原生层日志。遇到闪退：重启 App 后来这里查看/复制，发给开发者即可定位。</p>
+      <div class="pl-actions">
+        <button class="app-btn" id="set-log-view">查看日志</button>
+        <button class="app-btn danger" id="set-log-clear" style="margin-top:8px">清空日志</button>
+      </div>
+    </div>
+    <div class="set-group">
       <h3>关于</h3>
-      <p class="set-about">视频播放器 v1.0.0<br />
-      仿 VidHub 功能复刻（本地视频 / WebDAV / Emby / Jellyfin）。<br />
+      <p class="set-about">视频播放器 v1.1.2<br />
+      仿 VidHub 功能复刻（本地视频 / WebDAV / SMB / Emby / Jellyfin）。<br />
       基于 Web 技术栈 + Capacitor 构建，仅学习研究使用。</p>
     </div>
   `;
@@ -77,6 +85,35 @@ export function renderSettings(el: HTMLElement): void {
   };
   for (const id of ['#set-sub-size', '#set-sub-outline', '#set-sub-bg', '#set-sub-pos', '#set-sub-color']) {
     el.querySelector(id)!.addEventListener('input', applyStyle);
+  }
+
+  el.querySelector('#set-log-view')!.addEventListener('click', async () => {
+    toast('正在读取日志…');
+    const log = await readLog();
+    showLogModal(log);
+  });
+  el.querySelector('#set-log-clear')!.addEventListener('click', async () => {
+    const ok = await confirmDialog('清空原生调试日志？');
+    if (!ok) return;
+    await clearLog();
+    toast('已清空');
+  });
+
+  function showLogModal(log: string): void {
+    const wrap = modal('调试日志', `
+      <pre class="log-view">${log ? escapeHtml(log) : '（暂无日志）'}</pre>
+      <div class="pl-actions">
+        <button class="app-btn primary" data-act="copy">复制全部日志</button>
+      </div>
+    `);
+    wrap.querySelector('[data-act="copy"]')!.addEventListener('click', async () => {
+      try {
+        await navigator.clipboard.writeText(log || '（暂无日志）');
+        toast('已复制到剪贴板，直接粘贴发给开发者');
+      } catch {
+        toast('复制失败，请长按文本手动复制');
+      }
+    });
   }
 
   const total = state.library.reduce((a, f) => a + f.size, 0);

@@ -1104,3 +1104,21 @@ body.player-open #app {
 .app-confirm-btns .app-btn {
   flex: 1;
 }
+
+/* 调试日志查看 */
+
+.log-view {
+  max-height: 50vh;
+  overflow-y: auto;
+  background: #0b1120;
+  border: 1px solid #334155;
+  border-radius: 8px;
+  padding: 10px;
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-all;
+  color: #a5f3fc;
+  margin: 0;
+  font-family: ui-monospace, 'SF Mono', Menlo, monospace;
+}

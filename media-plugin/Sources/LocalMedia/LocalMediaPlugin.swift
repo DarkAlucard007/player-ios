@@ -31,8 +31,45 @@ public class LocalMediaPlugin: CAPPlugin, CAPBridgedPlugin, WKURLSchemeHandler, 
         CAPPluginMethod(name: "saveImageToPhotos", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "browseSMB", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "listSMBFiles", returnType: CAPPluginReturnPromise),
-        CAPPluginMethod(name: "releaseSMBFile", returnType: CAPPluginReturnPromise)
+        CAPPluginMethod(name: "releaseSMBFile", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "readLog", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "clearLog", returnType: CAPPluginReturnPromise)
     ]
+
+    // MARK: - 调试日志（同步写文件：闪退后日志依然存活，供 App 内查看/复制）
+
+    enum Log {
+        static let fileURL: URL = {
+            let dir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            return dir.appendingPathComponent("app-debug.log")
+        }()
+        static let iso = ISO8601DateFormatter()
+        static let queue = DispatchQueue(label: "localmedia.log")
+
+        static func write(_ s: String) {
+            let line = "[\(iso.string(from: Date()))] \(s)\n"
+            NSLog("%@", line.trimmingCharacters(in: .newlines))
+            queue.sync {
+                if let data = line.data(using: .utf8) {
+                    if let handle = try? FileHandle(forWritingTo: fileURL) {
+                        handle.seekToEndOfFile()
+                        handle.write(data)
+                        try? handle.close()
+                    } else {
+                        try? data.write(to: fileURL)
+                    }
+                }
+            }
+        }
+
+        static func tail(_ n: Int) -> String {
+            queue.sync {
+                guard let content = try? String(contentsOf: fileURL, encoding: .utf8) else { return "" }
+                let lines = content.components(separatedBy: "\n").filter { !$0.isEmpty }
+                return lines.suffix(n).joined(separator: "\n")
+            }
+        }
+    }
 
     // MARK: - 存储
 
@@ -61,20 +98,34 @@ public class LocalMediaPlugin: CAPPlugin, CAPBridgedPlugin, WKURLSchemeHandler, 
     /// SMB 会话文件：名称 → 安全作用域 URL（保持 startAccessing 直到 release）
     private var smbFiles: [String: URL] = [:]
 
+    @objc func readLog(_ call: CAPPluginCall) {
+        call.resolve(["log": Log.tail(400)])
+    }
+
+    @objc func clearLog(_ call: CAPPluginCall) {
+        Log.write("---- 日志已清空 ----")
+        call.resolve(["ok": true])
+    }
+
     // MARK: - 注册 URL scheme 处理器
 
     public override func load() {
+        Log.write("load() 插件初始化")
         bridge?.webView?.configuration.setURLSchemeHandler(self, forURLScheme: Self.scheme)
+        Log.write("load() localmedia:// scheme handler 已注册")
     }
 
     // MARK: - Actions
 
     @objc func pickMedia(_ call: CAPPluginCall) {
+        Log.write("pickMedia 开始 subtitles=\((call.options["subtitles"] as? NSNumber)?.boolValue ?? false)")
         let allowSubtitles = (call.options["subtitles"] as? NSNumber)?.boolValue ?? false
-        guard let anchor = bridge?.viewController ?? Self.topViewController() else {
+        guard let anchor = presentingAnchor() else {
+            Log.write("pickMedia 失败：无展示锚点")
             call.reject("no presentation anchor")
             return
         }
+        Log.write("pickMedia 锚点=\(type(of: anchor)) 开始展示系统选择器")
         var types: [UTType] = [.movie, .video, .mpeg4Movie, .quickTimeMovie]
         if allowSubtitles {
             types.append(contentsOf: [.plainText, .utf8PlainText, .item])
@@ -141,10 +192,13 @@ public class LocalMediaPlugin: CAPPlugin, CAPBridgedPlugin, WKURLSchemeHandler, 
     // MARK: - SMB（系统文档浏览器：进入 NAS 目录树浏览，点中视频即流式播放）
 
     @objc func browseSMB(_ call: CAPPluginCall) {
-        guard let anchor = bridge?.viewController ?? Self.topViewController() else {
+        Log.write("browseSMB 开始")
+        guard let anchor = presentingAnchor() else {
+            Log.write("browseSMB 失败：无展示锚点")
             call.reject("no presentation anchor")
             return
         }
+        Log.write("browseSMB 锚点=\(type(of: anchor))，创建文档浏览器")
         // UIDocumentBrowserViewController：系统级目录浏览器，
         // 会列出「文件」App 里注册过的 SMB 服务器，可逐层进入文件夹
         let browser = UIDocumentBrowserViewController()
@@ -153,7 +207,22 @@ public class LocalMediaPlugin: CAPPlugin, CAPBridgedPlugin, WKURLSchemeHandler, 
         smbBrowser = browser
         bridge?.saveCall(call)
         pendingSMBBrowseId = call.callbackId
+        Log.write("browseSMB 调用 present(animated:) …（之后若闪退，日志到此为止）")
         anchor.present(browser, animated: true)
+        Log.write("browseSMB present 返回，浏览器已展示")
+    }
+
+    /// 展示锚点：优先 key window 里最上层的 VC（其 view 一定在 window 里），
+    /// 回退到 bridge 的 VC。避免从不在 window 里的 VC 展示导致崩溃。
+    private func presentingAnchor() -> UIViewController? {
+        let top = Self.topViewController()
+        if let top, top.view.window != nil {
+            return top
+        }
+        if let bridgeVC = bridge?.viewController, bridgeVC.view.window != nil {
+            return bridgeVC
+        }
+        return top ?? bridge?.viewController
     }
 
     @objc func listSMBFiles(_ call: CAPPluginCall) {
@@ -216,6 +285,7 @@ public class LocalMediaPlugin: CAPPlugin, CAPBridgedPlugin, WKURLSchemeHandler, 
     // MARK: - UIDocumentPickerDelegate
 
     public func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
+        Log.write("documentPicker 选中 \(urls.count) 个文件")
         controller.dismiss(animated: true)
 
         // 普通导入：拷贝进 App 缓存目录
@@ -247,6 +317,7 @@ public class LocalMediaPlugin: CAPPlugin, CAPBridgedPlugin, WKURLSchemeHandler, 
     }
 
     public func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) {
+        Log.write("documentPicker 取消")
         controller.dismiss(animated: true)
         if let id = pendingPickId {
             resolveSaved(id, data: ["files": []])
@@ -260,12 +331,14 @@ public class LocalMediaPlugin: CAPPlugin, CAPBridgedPlugin, WKURLSchemeHandler, 
     public func documentBrowser(_ controller: UIDocumentBrowserViewController,
                                 initialURLsForListingIn bookmarkData: Data,
                                 completionHandler: @escaping ([URL]?, Error?) -> Void) {
+        Log.write("documentBrowser 请求初始目录（显示全部位置）")
         completionHandler(nil, nil)
     }
 
     /// 点中文件 → 返回预览页（视频显示「播放」按钮，点一下就登记并播放）
     public func documentBrowser(_ controller: UIDocumentBrowserViewController,
                                 previewViewControllerFor url: URL) async -> (UIViewController?, Error?) {
+        Log.write("documentBrowser 点中文件 \(url.lastPathComponent)")
         let isVideo = Self.videoExts.contains(url.pathExtension.lowercased())
         let vc = SMBPreviewViewController(fileName: url.lastPathComponent, isVideo: isVideo) { [weak self] in
             self?.registerSMBFileAndFinish(url)
@@ -275,6 +348,7 @@ public class LocalMediaPlugin: CAPPlugin, CAPBridgedPlugin, WKURLSchemeHandler, 
 
     /// 登记 SMB 文件（保持安全作用域访问）→ 关闭浏览器 → 回调 JS
     private func registerSMBFileAndFinish(_ url: URL) {
+        Log.write("registerSMBFileAndFinish \(url.lastPathComponent)")
         let key = uniqueSMBName(url.lastPathComponent)
         url.startAccessingSecurityScopedResource()
         smbFiles[key] = url
@@ -292,6 +366,7 @@ public class LocalMediaPlugin: CAPPlugin, CAPBridgedPlugin, WKURLSchemeHandler, 
                 self.pendingSMBBrowseId = nil
             }
             self.smbBrowser = nil
+            Log.write("registerSMBFileAndFinish 浏览器已关闭，回调 JS")
         }
     }
 
@@ -317,6 +392,8 @@ public class LocalMediaPlugin: CAPPlugin, CAPBridgedPlugin, WKURLSchemeHandler, 
             urlSchemeTask.didFailWithError(Self.error(404, "bad url"))
             return
         }
+        let range = urlSchemeTask.request.value(forHTTPHeaderField: "Range") ?? "-"
+        Log.write("scheme 请求 \(url.path) range=\(range)")
         var path = url.path
         if path.hasPrefix("/") { path.removeFirst() }
         guard !path.isEmpty else {
@@ -369,6 +446,7 @@ public class LocalMediaPlugin: CAPPlugin, CAPBridgedPlugin, WKURLSchemeHandler, 
     private var cancelledTasks = Set<ObjectIdentifier>()
 
     public func webView(_ webView: WKWebView, stop urlSchemeTask: WKURLSchemeTask) {
+        Log.write("scheme 停止 \(urlSchemeTask.request.url?.path ?? "?")")
         cancelledTasks.insert(ObjectIdentifier(urlSchemeTask))
     }
 

@@ -26,6 +26,8 @@ interface LocalMediaPluginInterface {
   browseSMB(): Promise<{ files: PickedFile[] }>;
   listSMBFiles(): Promise<{ files: LocalFileInfo[] }>;
   releaseSMBFile(options: { name: string }): Promise<{ ok: boolean }>;
+  readLog(): Promise<{ log: string }>;
+  clearLog(): Promise<{ ok: boolean }>;
 }
 
 export const LocalMedia = registerPlugin<LocalMediaPluginInterface>('LocalMedia');
@@ -165,6 +167,21 @@ export async function saveImageToPhotos(base64: string): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+/** 读取原生调试日志（最后 400 行；闪退后重启 App 日志依然存活） */
+export async function readLog(): Promise<string> {
+  if (!isNative) return '';
+  try {
+    const res = await LocalMedia.readLog();
+    return res.log || '';
+  } catch {
+    return '';
+  }
+}
+
+export async function clearLog(): Promise<void> {
+  if (isNative) await LocalMedia.clearLog();
 }
 
 /** 读取本地字幕/文本文件内容（localmedia:// URL 或 object URL） */
