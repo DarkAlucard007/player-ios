@@ -7,7 +7,7 @@ import { openPlayer } from '../player/player';
 import { nav } from '../router';
 import { confirmDialog, modal, promptDialog, toast } from '../components/ui';
 import { fmtSize, escapeHtml, isVideoName } from '../core/util';
-import { pickMedia, testBrowserLocal } from '../native/localMedia';
+import { browseSMB, listSMBFiles, pickMedia, testBrowserLocal } from '../native/localMedia';
 import { addLocalFiles } from '../core/store';
 
 export function renderBrowse(el: HTMLElement, hash: string): void {
@@ -313,9 +313,11 @@ function fmtDur(sec: number): string {
   return Math.floor(m / 60) + ' 小时 ' + (m % 60) + ' 分';
 }
 
-// ---- SMB 浏览（iOS 系统「文件」App 的 SMB 支持） ----
-// v1.1.5：本机实测 UIDocumentBrowserViewController 与 asCopy:false 选择器在本 App 内
-// present 即闪退（本地目录也崩），只有 asCopy:true 拷贝路径正常 → 改用「下载到手机再播」。
+// ---- SMB 浏览（iOS 系统「文件」App 的 SMB 支持：文档浏览器流式 + 拷贝下载） ----
+// v1.1.6：.ips 崩溃日志实锤根因——Capacitor 7 把插件方法调度到后台串行队列 "bridge" 上执行，
+// 旧代码在该队列里直接 present() 文档浏览器 → UIKit 视图控制器层级检查断言 → SIGABRT。
+// Swift 端已改为切主线程 present，恢复「进入 NAS 浏览」流式为主路线（VidHub 体验，不占存储），
+// 下载路线保留为备选，两条路都可用。
 
 function renderSMBBrowser(body: HTMLElement, source: Source): void {
   body.innerHTML = `
@@ -337,30 +339,75 @@ function renderSMBBrowser(body: HTMLElement, source: Source): void {
         <div>共享：<b>${escapeHtml(source.share || '—')}</b></div>
       </div>
       <p class="smb-note">对应 Windows 路径 \\\\${escapeHtml(source.host)}\\${escapeHtml(source.share || 'video')} 。
-      视频会先下载到手机存储再播放（「媒体库」里可管理、可删除）。</p>
+      「进入 NAS 浏览」直接从 NAS 流式播放（不占手机存储）；「浏览并下载」先存到手机再播（备选）。</p>
     </div>
-    <button class="app-btn primary smb-pick">📂 浏览并下载 NAS 视频</button>
+    <button class="app-btn primary smb-pick">📂 进入 NAS 浏览（流式播放，不下载）</button>
+    <button class="app-btn smb-dl" style="margin-top:8px;width:100%">📥 浏览并下载 NAS 视频（下载后播放）</button>
     <button class="app-btn smb-subs" style="margin-top:8px;width:100%">💬 下载 NAS 字幕（与视频同名自动加载）</button>
-    <button class="app-btn smb-test" style="margin-top:8px;width:100%">🧪 测试本地目录（闪退诊断，不碰 NAS）</button>
-    <div class="loading" style="margin-top:14px">下载完成的视频在「媒体库」里，点卡片即可播放。</div>
+    <button class="app-btn smb-test" style="margin-top:8px;width:100%">🧪 测试本地目录（诊断，不碰 NAS）</button>
+    <div id="smb-files" class="br-items"></div>
   `;
   body.querySelector('#smb-back')!.addEventListener('click', () => nav('#/browse'));
-  body.querySelector('.smb-pick')!.addEventListener('click', () => void doPickFromNAS(false));
+  body.querySelector('.smb-pick')!.addEventListener('click', () => void doBrowseSMB(body, source));
+  body.querySelector('.smb-dl')!.addEventListener('click', () => void doPickFromNAS(false));
   body.querySelector('.smb-subs')!.addEventListener('click', () => void doPickFromNAS(true));
   body.querySelector('.smb-test')!.addEventListener('click', () => void doTestLocal(source));
+  void refreshSMBFiles(body);
 }
 
-/** 闪退诊断：同一个文档浏览器打开 App 本地目录。
- *  不闪退 → 文档浏览器本身可用，问题在系统 SMB 组件；闪退 → 文档浏览器在这个 App 里本身就崩。 */
+/** 系统文档浏览器直连 smb://host/share 进入 NAS 目录树，点中视频即流式播放 */
+async function doBrowseSMB(body: HTMLElement, source: Source): Promise<void> {
+  toast('正在进入 NAS…');
+  const res = await browseSMB({ host: source.host, port: source.port, share: source.share });
+  if (res.files.length === 0) {
+    if (res.error) {
+      toast('进入 NAS 失败：' + res.error + '。请确认「文件」App 里已注册这台 SMB 服务器且能打开');
+    } else {
+      toast('未选择视频');
+    }
+    return;
+  }
+  await refreshSMBFiles(body);
+  // 点中即播：直接打开用户选中的视频
+  openPlayer('smb:' + res.files[0].name);
+}
+
+/** 列出本次会话已打开的 NAS 视频（流式播放，可重播） */
+async function refreshSMBFiles(body: HTMLElement): Promise<void> {
+  const box = body.querySelector<HTMLElement>('#smb-files');
+  if (!box) return;
+  const files = await listSMBFiles();
+  box.innerHTML = '';
+  if (files.length === 0) {
+    box.innerHTML = '<div class="loading">还没播放过 NAS 视频。点上面按钮进入 NAS，浏览文件夹，点视频即播。</div>';
+    return;
+  }
+  for (const f of files) {
+    const item = document.createElement('div');
+    item.className = 'br-item video';
+    item.innerHTML = `
+      <span class="br-ico">🎬</span>
+      <div class="br-main">
+        <div class="br-name">${escapeHtml(f.name)}</div>
+        <div class="br-sub">${f.size ? fmtSize(f.size) : ''} · NAS 流式</div>
+      </div>
+      <span class="br-go">▶</span>
+    `;
+    item.addEventListener('click', () => openPlayer('smb:' + f.name));
+    box.appendChild(item);
+  }
+}
+
+/** 诊断：同一个文档浏览器打开 App 本地目录（不碰 NAS）。v1.1.6 主线程修复后应正常弹出。 */
 async function doTestLocal(_source: Source): Promise<void> {
   toast('测试模式：弹出的浏览器里随便点点，然后返回关闭');
   const res = await testBrowserLocal();
   if (res.error === 'timeout') {
-    toast('✓ 本地目录测试通过（未闪退）。问题定位在系统 SMB 组件，不是文档浏览器本身');
+    toast('✓ 未闪退（关闭了浏览器）。文档浏览器可用');
   } else if (res.error) {
     toast('测试出错：' + res.error);
   } else {
-    toast('✓ 本地目录测试通过（未闪退）。问题定位在系统 SMB 组件，不是文档浏览器本身');
+    toast('✓ 未闪退。文档浏览器可用');
   }
 }
 

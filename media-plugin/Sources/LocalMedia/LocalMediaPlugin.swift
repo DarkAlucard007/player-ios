@@ -125,24 +125,30 @@ public class LocalMediaPlugin: CAPPlugin, CAPBridgedPlugin, WKURLSchemeHandler, 
     // MARK: - Actions
 
     @objc func pickMedia(_ call: CAPPluginCall) {
-        Log.write("pickMedia 开始 subtitles=\((call.options["subtitles"] as? NSNumber)?.boolValue ?? false)")
-        let allowSubtitles = (call.options["subtitles"] as? NSNumber)?.boolValue ?? false
-        guard let anchor = presentingAnchor() else {
-            Log.write("pickMedia 失败：无展示锚点")
-            call.reject("no presentation anchor")
-            return
+        // Capacitor 7 把插件方法调度到后台串行队列 "bridge" 上执行——一切 UIKit 操作
+        // （取锚点、present）必须切回主线程，否则文档类 UI 弹出时 UIKit 层级检查断言崩溃。
+        // （.ips 实锤：testBrowserLocal 在 bridge 队列 present → _addChildViewController
+        //  performHierarchyCheck 失败 → SIGABRT，v1.1.0–v1.1.4 全部闪退的真正根因）
+        DispatchQueue.main.async {
+            Log.write("pickMedia 开始 subtitles=\((call.options["subtitles"] as? NSNumber)?.boolValue ?? false)")
+            let allowSubtitles = (call.options["subtitles"] as? NSNumber)?.boolValue ?? false
+            guard let anchor = self.presentingAnchor() else {
+                Log.write("pickMedia 失败：无展示锚点")
+                call.reject("no presentation anchor")
+                return
+            }
+            Log.write("pickMedia 锚点=\(type(of: anchor)) 开始展示系统选择器（主线程）")
+            var types: [UTType] = [.movie, .video, .mpeg4Movie, .quickTimeMovie]
+            if allowSubtitles {
+                types.append(contentsOf: [.plainText, .utf8PlainText, .item])
+            }
+            let picker = UIDocumentPickerViewController(forOpeningContentTypes: types, asCopy: true)
+            picker.allowsMultipleSelection = true
+            picker.delegate = self
+            self.bridge?.saveCall(call)
+            self.pendingPickId = call.callbackId
+            anchor.present(picker, animated: true)
         }
-        Log.write("pickMedia 锚点=\(type(of: anchor)) 开始展示系统选择器")
-        var types: [UTType] = [.movie, .video, .mpeg4Movie, .quickTimeMovie]
-        if allowSubtitles {
-            types.append(contentsOf: [.plainText, .utf8PlainText, .item])
-        }
-        let picker = UIDocumentPickerViewController(forOpeningContentTypes: types, asCopy: true)
-        picker.allowsMultipleSelection = true
-        picker.delegate = self
-        bridge?.saveCall(call)
-        pendingPickId = call.callbackId
-        anchor.present(picker, animated: true)
     }
 
     @objc func listFiles(_ call: CAPPluginCall) {
@@ -199,66 +205,70 @@ public class LocalMediaPlugin: CAPPlugin, CAPBridgedPlugin, WKURLSchemeHandler, 
     // MARK: - SMB（系统文档浏览器：进入 NAS 目录树浏览，点中视频即流式播放）
 
     @objc func browseSMB(_ call: CAPPluginCall) {
-        let host = call.options["host"] as? String ?? ""
-        let port = (call.options["port"] as? NSNumber)?.stringValue ?? ""
-        let share = call.options["share"] as? String ?? ""
-        Log.write("browseSMB 开始 host=\(host) port=\(port) share=\(share)")
-        guard !host.isEmpty else {
-            Log.write("browseSMB 失败：缺少 host")
-            call.reject("missing host")
-            return
+        // 同 pickMedia：插件方法在 Capacitor 后台队列 "bridge" 上执行，present 必须切主线程
+        DispatchQueue.main.async {
+            let host = call.options["host"] as? String ?? ""
+            let port = (call.options["port"] as? NSNumber)?.stringValue ?? ""
+            let share = call.options["share"] as? String ?? ""
+            Log.write("browseSMB 开始 host=\(host) port=\(port) share=\(share)")
+            guard !host.isEmpty else {
+                Log.write("browseSMB 失败：缺少 host")
+                call.reject("missing host")
+                return
+            }
+            guard let anchor = self.presentingAnchor() else {
+                Log.write("browseSMB 失败：无展示锚点")
+                call.reject("no presentation anchor")
+                return
+            }
+            guard !share.isEmpty else {
+                Log.write("browseSMB 失败：共享文件夹名为空")
+                call.reject("missing share（请在添加源时填写共享文件夹名，例如 video）")
+                return
+            }
+            // 直连 smb://host[:port]/share，跳过系统「全部位置」枚举
+            var urlString = "smb://" + host
+            if !port.isEmpty, let p = Int(port), p > 0 { urlString += ":" + String(p) }
+            urlString += "/" + share
+            guard let smbURL = URL(string: urlString) else {
+                call.reject("bad smb url: \(urlString)")
+                return
+            }
+            self.smbRootURL = smbURL
+            Log.write("browseSMB 锚点=\(type(of: anchor))，直连 \(urlString)（主线程）")
+            let browser = UIDocumentBrowserViewController()
+            browser.delegate = self
+            // 创建/删除/重命名/移动默认都是 false，正好只要「浏览 + 打开」
+            self.smbBrowser = browser
+            self.bridge?.saveCall(call)
+            self.pendingSMBBrowseId = call.callbackId
+            Log.write("browseSMB 调用 present(animated:) …")
+            anchor.present(browser, animated: true)
+            Log.write("browseSMB present 返回，浏览器已展示")
         }
-        guard let anchor = presentingAnchor() else {
-            Log.write("browseSMB 失败：无展示锚点")
-            call.reject("no presentation anchor")
-            return
-        }
-        guard !share.isEmpty else {
-            Log.write("browseSMB 失败：共享文件夹名为空")
-            call.reject("missing share（请在添加源时填写共享文件夹名，例如 video）")
-            return
-        }
-        // 直连 smb://host[:port]/share —— 跳过系统「全部位置」枚举
-        //（枚举会拉起手机上所有 Files 扩展，其中一个会把展示流程带崩，v1.1.0/1.1.1 闪退根因）
-        var urlString = "smb://" + host
-        if !port.isEmpty, let p = Int(port), p > 0 { urlString += ":" + String(p) }
-        urlString += "/" + share
-        guard let smbURL = URL(string: urlString) else {
-            call.reject("bad smb url: \(urlString)")
-            return
-        }
-        smbRootURL = smbURL
-        Log.write("browseSMB 锚点=\(type(of: anchor))，直连 \(urlString)")
-        let browser = UIDocumentBrowserViewController()
-        browser.delegate = self
-        // 创建/删除/重命名/移动默认都是 false，正好只要「浏览 + 打开」
-        smbBrowser = browser
-        bridge?.saveCall(call)
-        pendingSMBBrowseId = call.callbackId
-        Log.write("browseSMB 调用 present(animated:) …")
-        anchor.present(browser, animated: true)
-        Log.write("browseSMB present 返回，浏览器已展示")
     }
 
     /// 诊断用：文档浏览器打开 App 自己的本地目录（完全不碰 SMB）。
-    /// 若此按钮也闪退 → 文档浏览器在这个 App 上下文里本身就崩；不闪退 → 系统 SMB 组件的问题。
+    /// v1.1.6 起 present 已切主线程，此按钮应能正常弹出（不再闪退），可用于验证文档浏览器整体可用。
     @objc func testBrowserLocal(_ call: CAPPluginCall) {
-        Log.write("testBrowserLocal 开始（本地目录，无 SMB）")
-        guard let anchor = presentingAnchor() else {
-            call.reject("no presentation anchor")
-            return
+        DispatchQueue.main.async {
+            Log.write("testBrowserLocal 开始（本地目录，无 SMB）")
+            guard let anchor = self.presentingAnchor() else {
+                call.reject("no presentation anchor")
+                return
+            }
+            let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            self.smbRootURL = docs
+            self.smbTestMode = true
+            Log.write("testBrowserLocal 锚点=\(type(of: anchor))，直连 \(docs.path)（主线程）")
+            let browser = UIDocumentBrowserViewController()
+            browser.delegate = self
+            self.smbBrowser = browser
+            self.bridge?.saveCall(call)
+            self.pendingSMBBrowseId = call.callbackId
+            anchor.present(browser, animated: true)
+            Log.write("testBrowserLocal present 返回")
         }
-        let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-        smbRootURL = docs
-        smbTestMode = true
-        Log.write("testBrowserLocal 锚点=\(type(of: anchor))，直连 \(docs.path)")
-        let browser = UIDocumentBrowserViewController()
-        browser.delegate = self
-        smbBrowser = browser
-        bridge?.saveCall(call)
-        pendingSMBBrowseId = call.callbackId
-        anchor.present(browser, animated: true)
-        Log.write("testBrowserLocal present 返回")
     }
 
     /// 展示锚点：优先 key window 里最上层的 VC（其 view 一定在 window 里），
