@@ -425,20 +425,37 @@ public class LocalMediaPlugin: CAPPlugin, CAPBridgedPlugin, WKURLSchemeHandler, 
     }
 
     /// 点中文件 → 返回预览页（视频显示「播放」按钮，点一下就登记并播放）。
-    /// v1.1.8：改用同步版 @objc 代理方法——异步版 (async -> (VC?, Error?)) 无法被 ObjC 运行时发现，
-    /// 缺 @objc 的代理回调全部静默失效，导致浏览器显示默认本地位置、点中文件走系统 QuickLook。
+    /// v1.1.11：恢复 completionHandler 版代理——iOS 26 实测只调用这个版本。
+    /// v1.1.8 曾误判"异步版无法被 ObjC 运行时发现"换成同步版，结果点中文件走系统 QuickLook
+    /// （从 SMB 流式拉视频/图片做预览，几秒一个、非常卡，且没有"用本 App 播放"入口）。
+    /// 闭包参数在 ObjC 里就是 block，@objc 可正常暴露。返回自绘预览页 = 秒开、不拉流预览、点按钮才播放。
     @objc public func documentBrowser(_ controller: UIDocumentBrowserViewController,
-                                      previewViewControllerFor url: URL) -> UIViewController? {
+                                       previewViewControllerFor url: URL,
+                                       completionHandler: @escaping (UIViewController?, Error?) -> Void) {
         if smbTestMode {
             Log.write("documentBrowser [测试模式] 点中本地文件 \(url.lastPathComponent)（仅日志，不播放）")
-            return nil
+            completionHandler(nil, nil)
+            return
         }
-        Log.write("documentBrowser 点中文件 \(url.lastPathComponent)")
+        Log.write("documentBrowser 点中文件 \(url.lastPathComponent) (\(url))")
         // 无扩展名的条目（如点中共享名本身）返回 nil → 浏览器直接钻进目录，不弹预览
         if url.pathExtension.isEmpty {
             Log.write("documentBrowser 目录项，进入 \(url)")
-            return nil
+            completionHandler(nil, nil)
+            return
         }
+        let isVideo = Self.videoExts.contains(url.pathExtension.lowercased())
+        completionHandler(SMBPreviewViewController(fileName: url.lastPathComponent, isVideo: isVideo) { [weak self] in
+            self?.registerSMBFileAndFinish(url)
+        }, nil)
+    }
+
+    /// 同步版预览代理（保留作旧系统回退路径；iOS 26 实测不调用它）
+    @objc public func documentBrowser(_ controller: UIDocumentBrowserViewController,
+                                       previewViewControllerFor url: URL) -> UIViewController? {
+        Log.write("documentBrowser [同步版] 点中文件 \(url.lastPathComponent)")
+        if smbTestMode { return nil }
+        if url.pathExtension.isEmpty { return nil }
         let isVideo = Self.videoExts.contains(url.pathExtension.lowercased())
         return SMBPreviewViewController(fileName: url.lastPathComponent, isVideo: isVideo) { [weak self] in
             self?.registerSMBFileAndFinish(url)
