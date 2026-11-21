@@ -387,10 +387,11 @@ public class LocalMediaPlugin: CAPPlugin, CAPBridgedPlugin, WKURLSchemeHandler, 
 
     // MARK: - UIDocumentBrowserDelegate（SMB 目录浏览）
 
-    /// 首次进入：直接给出 smb:// 服务器根（列共享）或本地测试目录，不枚举全部位置
-    public func documentBrowser(_ controller: UIDocumentBrowserViewController,
-                                initialURLsForListingIn bookmarkData: Data,
-                                completionHandler: @escaping ([URL]?, Error?) -> Void) {
+    /// 首次进入：直接给出 smb:// 服务器根（列共享）或本地测试目录，不枚举全部位置。
+    /// v1.1.8：@objc 必须——协议是 ObjC 的，缺 @objc 时运行时找不到此回调，浏览器显示默认本地位置
+    @objc public func documentBrowser(_ controller: UIDocumentBrowserViewController,
+                                      initialURLsForListingIn bookmarkData: Data,
+                                      completionHandler: @escaping ([URL]?, Error?) -> Void) {
         if let root = smbRootURL {
             Log.write("documentBrowser 直连 \(root)")
             completionHandler([root], nil)
@@ -400,10 +401,10 @@ public class LocalMediaPlugin: CAPPlugin, CAPBridgedPlugin, WKURLSchemeHandler, 
         }
     }
 
-    /// 读取目录失败（smb:// 不被识别 / 认证失败 / 网络不通）→ 通知 JS 显示指引
-    public func documentBrowser(_ controller: UIDocumentBrowserViewController,
-                                didFailToReadDirectoryContentsOf url: URL,
-                                withError error: Error) {
+    /// 读取目录失败（smb:// 不被识别 / 认证失败 / 网络不通）→ 通知 JS 显示指引（v1.1.8 加 @objc）
+    @objc public func documentBrowser(_ controller: UIDocumentBrowserViewController,
+                                      didFailToReadDirectoryContentsOf url: URL,
+                                      withError error: Error) {
         Log.write("documentBrowser 读目录失败 \(url) error=\(error.localizedDescription)")
         controller.dismiss(animated: true)
         if let id = pendingSMBBrowseId {
@@ -414,24 +415,25 @@ public class LocalMediaPlugin: CAPPlugin, CAPBridgedPlugin, WKURLSchemeHandler, 
         smbRootURL = nil
     }
 
-    /// 点中文件 → 返回预览页（视频显示「播放」按钮，点一下就登记并播放）
-    public func documentBrowser(_ controller: UIDocumentBrowserViewController,
-                                previewViewControllerFor url: URL) async -> (UIViewController?, Error?) {
+    /// 点中文件 → 返回预览页（视频显示「播放」按钮，点一下就登记并播放）。
+    /// v1.1.8：改用同步版 @objc 代理方法——异步版 (async -> (VC?, Error?)) 无法被 ObjC 运行时发现，
+    /// 缺 @objc 的代理回调全部静默失效，导致浏览器显示默认本地位置、点中文件走系统 QuickLook。
+    @objc public func documentBrowser(_ controller: UIDocumentBrowserViewController,
+                                      previewViewControllerFor url: URL) -> UIViewController? {
         if smbTestMode {
             Log.write("documentBrowser [测试模式] 点中本地文件 \(url.lastPathComponent)（仅日志，不播放）")
-            return (nil, nil)
+            return nil
         }
         Log.write("documentBrowser 点中文件 \(url.lastPathComponent)")
-        // v1.1.7：无扩展名的条目（如点中共享名本身）返回 (nil, nil) → 浏览器直接钻进目录，不弹预览
+        // 无扩展名的条目（如点中共享名本身）返回 nil → 浏览器直接钻进目录，不弹预览
         if url.pathExtension.isEmpty {
             Log.write("documentBrowser 目录项，进入 \(url)")
-            return (nil, nil)
+            return nil
         }
         let isVideo = Self.videoExts.contains(url.pathExtension.lowercased())
-        let vc = SMBPreviewViewController(fileName: url.lastPathComponent, isVideo: isVideo) { [weak self] in
+        return SMBPreviewViewController(fileName: url.lastPathComponent, isVideo: isVideo) { [weak self] in
             self?.registerSMBFileAndFinish(url)
         }
-        return (vc, nil)
     }
 
     /// 登记 SMB 文件（保持安全作用域访问）→ 关闭浏览器 → 回调 JS
