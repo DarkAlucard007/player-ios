@@ -226,16 +226,17 @@ public class LocalMediaPlugin: CAPPlugin, CAPBridgedPlugin, WKURLSchemeHandler, 
                 call.reject("missing share（请在添加源时填写共享文件夹名，例如 video）")
                 return
             }
-            // 直连 smb://host[:port]/share，跳过系统「全部位置」枚举
+            // v1.1.7：直连服务器根 smb://host[:port]（先列共享）。
+            // 深层 smb://host/share 在 SMB 会话未建立时解析为空列表且不报错；
+            // 先进根目录列出共享（同「文件」App 的路径）会激活会话，用户点共享名即进入。
             var urlString = "smb://" + host
             if !port.isEmpty, let p = Int(port), p > 0 { urlString += ":" + String(p) }
-            urlString += "/" + share
             guard let smbURL = URL(string: urlString) else {
                 call.reject("bad smb url: \(urlString)")
                 return
             }
             self.smbRootURL = smbURL
-            Log.write("browseSMB 锚点=\(type(of: anchor))，直连 \(urlString)（主线程）")
+            Log.write("browseSMB 锚点=\(type(of: anchor))，直连服务器根 \(urlString)（主线程，目标共享=\(share)）")
             let browser = UIDocumentBrowserViewController()
             browser.delegate = self
             // 创建/删除/重命名/移动默认都是 false，正好只要「浏览 + 打开」
@@ -386,12 +387,12 @@ public class LocalMediaPlugin: CAPPlugin, CAPBridgedPlugin, WKURLSchemeHandler, 
 
     // MARK: - UIDocumentBrowserDelegate（SMB 目录浏览）
 
-    /// 首次进入：直接给出 smb:// 共享地址 → 浏览器钻进共享目录，不枚举全部位置
+    /// 首次进入：直接给出 smb:// 服务器根（列共享）或本地测试目录，不枚举全部位置
     public func documentBrowser(_ controller: UIDocumentBrowserViewController,
                                 initialURLsForListingIn bookmarkData: Data,
                                 completionHandler: @escaping ([URL]?, Error?) -> Void) {
         if let root = smbRootURL {
-            Log.write("documentBrowser 直连共享目录 \(root)")
+            Log.write("documentBrowser 直连 \(root)")
             completionHandler([root], nil)
         } else {
             Log.write("documentBrowser 无直连地址，回退显示全部位置")
@@ -421,6 +422,11 @@ public class LocalMediaPlugin: CAPPlugin, CAPBridgedPlugin, WKURLSchemeHandler, 
             return (nil, nil)
         }
         Log.write("documentBrowser 点中文件 \(url.lastPathComponent)")
+        // v1.1.7：无扩展名的条目（如点中共享名本身）返回 (nil, nil) → 浏览器直接钻进目录，不弹预览
+        if url.pathExtension.isEmpty {
+            Log.write("documentBrowser 目录项，进入 \(url)")
+            return (nil, nil)
+        }
         let isVideo = Self.videoExts.contains(url.pathExtension.lowercased())
         let vc = SMBPreviewViewController(fileName: url.lastPathComponent, isVideo: isVideo) { [weak self] in
             self?.registerSMBFileAndFinish(url)

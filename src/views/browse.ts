@@ -339,7 +339,7 @@ function renderSMBBrowser(body: HTMLElement, source: Source): void {
         <div>共享：<b>${escapeHtml(source.share || '—')}</b></div>
       </div>
       <p class="smb-note">对应 Windows 路径 \\\\${escapeHtml(source.host)}\\${escapeHtml(source.share || 'video')} 。
-      「进入 NAS 浏览」直接从 NAS 流式播放（不占手机存储）；「浏览并下载」先存到手机再播（备选）。</p>
+      点「进入 NAS 浏览」后，<b>先点一下共享名「${escapeHtml(source.share || 'video')}」</b>进入文件夹，再点视频即播（流式，不占手机存储）；「浏览并下载」先存到手机再播（备选）。</p>
     </div>
     <button class="app-btn primary smb-pick">📂 进入 NAS 浏览（流式播放，不下载）</button>
     <button class="app-btn smb-dl" style="margin-top:8px;width:100%">📥 浏览并下载 NAS 视频（下载后播放）</button>
