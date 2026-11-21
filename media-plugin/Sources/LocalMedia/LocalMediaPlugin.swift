@@ -246,6 +246,15 @@ public class LocalMediaPlugin: CAPPlugin, CAPBridgedPlugin, WKURLSchemeHandler, 
             Log.write("browseSMB 调用 present(animated:) …")
             anchor.present(browser, animated: true)
             Log.write("browseSMB present 返回，浏览器已展示")
+            // v1.1.9 诊断：present 后 3 秒读浏览器实际停留目录（currentDirectoryURL 是公开属性），
+            // 直接回答"浏览器到底打开的是 NAS 还是本地"，不再靠猜回调是否被调用。
+            DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) {
+                if let cur = self.smbBrowser?.currentDirectoryURL {
+                    Log.write("browseSMB 诊断(3s) currentDirectoryURL=\(cur.absoluteString)")
+                } else {
+                    Log.write("browseSMB 诊断(3s) currentDirectoryURL=nil（浏览器还在初始位置列表）")
+                }
+            }
         }
     }
 

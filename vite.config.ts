@@ -1,6 +1,13 @@
 import { defineConfig } from 'vite';
+import { readFileSync } from 'node:fs';
+
+// 版本号唯一来源：package.json（构建时注入前端，禁止硬编码）
+const pkg = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')) as { version: string };
 
 export default defineConfig({
+  define: {
+    __APP_VERSION__: JSON.stringify(pkg.version)
+  },
   // 用相对路径，打包产物才能放进任意目录
   base: './',
   server: {

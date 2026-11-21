@@ -8,7 +8,7 @@ import { nav } from '../router';
 export function renderHome(el: HTMLElement): void {
   el.innerHTML = `
     <div class="page-head">
-      <h1>视频播放器</h1>
+      <h1>视频播放器<span class="app-ver">v${__APP_VERSION__}</span></h1>
       <div class="page-actions">
         <button class="app-btn" id="home-add-src">+ 媒体源</button>
       </div>

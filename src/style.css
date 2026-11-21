@@ -57,6 +57,14 @@ body.player-open #app {
   margin: 0;
 }
 
+.app-ver {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--fg-dim);
+  margin-left: 10px;
+  vertical-align: middle;
+}
+
 .page-actions {
   display: flex;
   gap: 8px;

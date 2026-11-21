@@ -126,7 +126,8 @@ def main():
 
         page.goto("file:///" + DIST.replace("\\", "/"))
         page.wait_for_selector("h1", timeout=10000)
-        check("首页渲染（h1=视频播放器）", page.locator("h1").first.inner_text() == "视频播放器")
+        h1txt = page.locator("h1").first.inner_text().replace("\n", "")
+        check("首页渲染（h1 以 视频播放器 开头且含版本号）", h1txt.startswith("视频播放器") and "v" in h1txt)
         check("底部标签栏 6 个标签", page.locator("#tabbar .tab").count() == 6)
 
         # ---- 媒体库导入 ----
