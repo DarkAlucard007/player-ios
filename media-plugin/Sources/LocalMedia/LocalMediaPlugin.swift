@@ -79,9 +79,11 @@ public class LocalMediaPlugin: CAPPlugin, CAPBridgedPlugin, WKURLSchemeHandler, 
     ]
     private static let subtitleExts: Set<String> = ["srt", "ass", "ssa", "sub"]
 
-    /// v1.1.12：SMB picker 的内容类型（与 pickMedia 相同）。picker 的导航界面就是「文件」App 的，
-    /// 可进 NAS、逐层进文件夹，选中视频（可多选）。
-    private static let smbPickTypes: [UTType] = [.movie, .video, .mpeg4Movie, .quickTimeMovie]
+    /// v1.1.13：SMB picker 用通用类型 .item（不过滤）。
+    /// 原因：picker 按内容类型过滤文件，但 SMB 远程文件的 UTType 探测不可靠，
+    /// 用 [.movie,.video,…] 会把全部远程文件过滤掉→空列表（v1.1.12 实测）。
+    /// .item 显示全部文件，用户直接选视频即可（前端按扩展名判字幕/视频）。
+    private static let smbPickTypes: [UTType] = [.item]
 
     private var mediaDir: URL {
         let dir = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
@@ -98,6 +100,8 @@ public class LocalMediaPlugin: CAPPlugin, CAPBridgedPlugin, WKURLSchemeHandler, 
 
     /// SMB 会话文件：名称 → 安全作用域 URL（保持 startAccessing 直到 release）
     private var smbFiles: [String: URL] = [:]
+    /// SMB 会话文件的类型（video/subtitle/other），listSMBFiles 时回传，前端据此区分
+    private var smbKinds: [String: String] = [:]
 
     @objc func readLog(_ call: CAPPluginCall) {
         call.resolve(["log": Log.tail(400)])
@@ -248,7 +252,7 @@ public class LocalMediaPlugin: CAPPlugin, CAPBridgedPlugin, WKURLSchemeHandler, 
         var files: [[String: Any]] = []
         for (name, url) in smbFiles {
             let size = (try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0
-            files.append(["name": name, "size": size, "kind": "video"])
+            files.append(["name": name, "size": size, "kind": smbKinds[name] ?? "video"])
         }
         files.sort { ($0["name"] as? String ?? "") < ($1["name"] as? String ?? "") }
         call.resolve(["files": files])
@@ -262,6 +266,7 @@ public class LocalMediaPlugin: CAPPlugin, CAPBridgedPlugin, WKURLSchemeHandler, 
         if let url = smbFiles.removeValue(forKey: name) {
             url.stopAccessingSecurityScopedResource()
         }
+        smbKinds.removeValue(forKey: name)
         call.resolve(["ok": true])
     }
 
@@ -315,12 +320,22 @@ public class LocalMediaPlugin: CAPPlugin, CAPBridgedPlugin, WKURLSchemeHandler, 
                 let key = uniqueSMBName(url.lastPathComponent)
                 url.startAccessingSecurityScopedResource()
                 smbFiles[key] = url
+                smbKinds[key] = kind
                 let size = (try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0
-                Log.write("SMB 登记 \(key) <- \(url)")
+                let ext = url.pathExtension.lowercased()
+                let kind: String
+                if Self.subtitleExts.contains(ext) {
+                    kind = "subtitle"
+                } else if Self.videoExts.contains(ext) {
+                    kind = "video"
+                } else {
+                    kind = "other"
+                }
+                Log.write("SMB 登记 \(key) <- \(url)（\(kind)）")
                 results.append([
                     "name": key,
                     "size": size,
-                    "kind": "video",
+                    "kind": kind,
                     "url": "localmedia://smb/\(key.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? key)"
                 ])
             }

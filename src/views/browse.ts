@@ -367,8 +367,15 @@ async function doBrowseSMB(body: HTMLElement, source: Source): Promise<void> {
     return;
   }
   await refreshSMBFiles(body);
-  // 选中即播：直接打开用户选中的第一个视频（其余进会话列表可重播）
-  openPlayer('smb:' + res.files[0].name);
+  // 选中即播：打开第一个视频类型的文件（.item 下可能混入字幕/其他，按 kind 过滤）
+  const video = res.files.find((f) => f.kind === 'video');
+  if (video) {
+    openPlayer('smb:' + video.name);
+  } else if (res.files.some((f) => f.kind === 'subtitle')) {
+    toast('选中的是字幕文件，请用「下载 NAS 字幕」按钮导入');
+  } else {
+    toast('选中的文件不是可播放视频');
+  }
 }
 
 /** 列出本次会话已打开的 NAS 视频（流式播放，可重播） */
@@ -382,17 +389,18 @@ async function refreshSMBFiles(body: HTMLElement): Promise<void> {
     return;
   }
   for (const f of files) {
+    const isSub = f.kind === 'subtitle';
     const item = document.createElement('div');
     item.className = 'br-item video';
     item.innerHTML = `
-      <span class="br-ico">🎬</span>
+      <span class="br-ico">${isSub ? '💬' : '🎬'}</span>
       <div class="br-main">
         <div class="br-name">${escapeHtml(f.name)}</div>
-        <div class="br-sub">${f.size ? fmtSize(f.size) : ''} · NAS 流式</div>
+        <div class="br-sub">${f.size ? fmtSize(f.size) : ''} · NAS ${isSub ? '字幕（播放时可在播放器内加载）' : '流式'}</div>
       </div>
-      <span class="br-go">▶</span>
+      ${isSub ? '' : '<span class="br-go">▶</span>'}
     `;
-    item.addEventListener('click', () => openPlayer('smb:' + f.name));
+    if (!isSub) item.addEventListener('click', () => openPlayer('smb:' + f.name));
     box.appendChild(item);
   }
 }
