@@ -336,7 +336,7 @@ public class LocalMediaPlugin: CAPPlugin, CAPBridgedPlugin, WKURLSchemeHandler, 
                     "name": key,
                     "size": size,
                     "kind": kind,
-                    "url": "localmedia://smb/\(key.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? key)"
+                    "url": "localmedia:///smb/\(key.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? key)"
                 ])
             }
             resolveSaved(id, data: ["files": results])

@@ -240,7 +240,7 @@ globalThis.DOMParser = class {
   // ============ 4. SMB key 解析 ============
   console.log('=== 4. SMB key 解析 ===');
   const smb = resolvePlayback('smb:我的 电影.mp4');
-  check('smb key → localmedia://smb/ URL', smb && smb.url === 'localmedia://smb/' + encodeURIComponent('我的 电影.mp4'), smb && smb.url);
+  check('smb key → localmedia:///smb/ URL', smb && smb.url === 'localmedia:///smb/' + encodeURIComponent('我的 电影.mp4'), smb && smb.url);
   check('smb key → smbName', smb && smb.smbName === '我的 电影.mp4');
   check('smb key → localName 为 null', smb && smb.localName === null);
 

@@ -44,9 +44,9 @@ export function localUrl(name: string): string | null {
   return webFileUrls.get(name) ?? null;
 }
 
-/** SMB 会话文件的播放 URL（真机：localmedia://smb/<name> ；浏览器模式无 SMB） */
+/** SMB 会话文件的播放 URL（真机：localmedia:///smb/<name>，无主机名形式——带主机名 localmedia://smb/ 会被 WKWebView 媒体引擎走网络路径、不进 scheme handler）；浏览器模式无 SMB */
 export function smbUrl(name: string): string | null {
-  if (isNative || !hasDom) return 'localmedia://smb/' + encodeURIComponent(name);
+  if (isNative || !hasDom) return 'localmedia:///smb/' + encodeURIComponent(name);
   return null;
 }
 
