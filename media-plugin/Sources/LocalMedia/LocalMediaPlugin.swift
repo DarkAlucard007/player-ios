@@ -320,7 +320,6 @@ public class LocalMediaPlugin: CAPPlugin, CAPBridgedPlugin, WKURLSchemeHandler, 
                 let key = uniqueSMBName(url.lastPathComponent)
                 url.startAccessingSecurityScopedResource()
                 smbFiles[key] = url
-                smbKinds[key] = kind
                 let size = (try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0
                 let ext = url.pathExtension.lowercased()
                 let kind: String
@@ -331,6 +330,7 @@ public class LocalMediaPlugin: CAPPlugin, CAPBridgedPlugin, WKURLSchemeHandler, 
                 } else {
                     kind = "other"
                 }
+                smbKinds[key] = kind
                 Log.write("SMB 登记 \(key) <- \(url)（\(kind)）")
                 results.append([
                     "name": key,
