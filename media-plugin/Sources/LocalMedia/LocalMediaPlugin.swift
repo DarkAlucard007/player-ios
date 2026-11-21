@@ -80,6 +80,10 @@ public class LocalMediaPlugin: CAPPlugin, CAPBridgedPlugin, WKURLSchemeHandler, 
     ]
     private static let subtitleExts: Set<String> = ["srt", "ass", "ssa", "sub"]
 
+    /// 文档浏览器的内容类型：.item 是通用顶层类型，列出 NAS 上所有文件（含各格式视频），
+    /// 目录项始终可见可进入。v1.1.10 起配合 init(forOpening:) 使用。
+    private static let browseContentTypes: [UTType] = [.item]
+
     private var mediaDir: URL {
         let dir = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("localmedia", isDirectory: true)
@@ -237,7 +241,11 @@ public class LocalMediaPlugin: CAPPlugin, CAPBridgedPlugin, WKURLSchemeHandler, 
             }
             self.smbRootURL = smbURL
             Log.write("browseSMB 锚点=\(type(of: anchor))，直连服务器根 \(urlString)（主线程，目标共享=\(share)）")
-            let browser = UIDocumentBrowserViewController()
+            // v1.1.10 关键修复：必须用文档化的 init(forOpening:) 创建文档浏览器。
+            // 之前用裸 init()（继承自 UIViewController）创建的浏览器处于未初始化浏览状态，
+            // 从不去问 delegate 的 initialURLsForListingIn —— 这就是日志里始终没有
+            // "documentBrowser 直连 smb://…" 回调行、浏览器一直显示默认本地位置的根因。
+            let browser = UIDocumentBrowserViewController(forOpening: Self.browseContentTypes)
             browser.delegate = self
             // 创建/删除/重命名/移动默认都是 false，正好只要「浏览 + 打开」
             self.smbBrowser = browser
@@ -262,7 +270,8 @@ public class LocalMediaPlugin: CAPPlugin, CAPBridgedPlugin, WKURLSchemeHandler, 
             self.smbRootURL = docs
             self.smbTestMode = true
             Log.write("testBrowserLocal 锚点=\(type(of: anchor))，直连 \(docs.path)（主线程）")
-            let browser = UIDocumentBrowserViewController()
+            // v1.1.10：同 browseSMB，用 init(forOpening:) 创建，保证 delegate 初始地址回调被调用
+            let browser = UIDocumentBrowserViewController(forOpening: Self.browseContentTypes)
             browser.delegate = self
             self.smbBrowser = browser
             self.bridge?.saveCall(call)
