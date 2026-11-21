@@ -204,7 +204,11 @@ function bindPlayerEvents(video: HTMLVideoElement, s: PlayerSession): void {
     }
   });
   video.addEventListener('error', () => {
-    toast('播放失败：格式不受支持或地址无效');
+    // 诊断：错误码 1=中止 2=网络 3=解码 4=源不受支持；currentSrc=媒体引擎实际解析到的 URL
+    const code = video.error ? video.error.code : '无error对象';
+    const msg = video.error ? video.error.message : '';
+    const src = video.currentSrc || video.src || '(空)';
+    toast(`播放失败 code=${code} src=${src} ${msg}`.slice(0, 200));
   });
 
   video.addEventListener('timeupdate', () => {
