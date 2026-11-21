@@ -16,7 +16,7 @@ import Photos
 import UniformTypeIdentifiers
 
 @objc(LocalMediaPlugin)
-public class LocalMediaPlugin: CAPPlugin, CAPBridgedPlugin, WKURLSchemeHandler, UIDocumentPickerDelegate, UIDocumentBrowserViewControllerDelegate {
+public class LocalMediaPlugin: CAPPlugin, CAPBridgedPlugin, WKURLSchemeHandler, UIDocumentPickerDelegate {
 
     // MARK: - CAPBridgedPlugin（Capacitor 7 自动发现，类名必须与 packageClassList 一致）
 
@@ -30,7 +30,6 @@ public class LocalMediaPlugin: CAPPlugin, CAPBridgedPlugin, WKURLSchemeHandler, 
         CAPPluginMethod(name: "captureFrame", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "saveImageToPhotos", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "browseSMB", returnType: CAPPluginReturnPromise),
-        CAPPluginMethod(name: "testBrowserLocal", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "listSMBFiles", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "releaseSMBFile", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "readLog", returnType: CAPPluginReturnPromise),
@@ -80,9 +79,9 @@ public class LocalMediaPlugin: CAPPlugin, CAPBridgedPlugin, WKURLSchemeHandler, 
     ]
     private static let subtitleExts: Set<String> = ["srt", "ass", "ssa", "sub"]
 
-    /// 文档浏览器的内容类型：.item 是通用顶层类型，列出 NAS 上所有文件（含各格式视频），
-    /// 目录项始终可见可进入。v1.1.10 起配合 init(forOpening:) 使用。
-    private static let browseContentTypes: [UTType] = [.item]
+    /// v1.1.12：SMB picker 的内容类型（与 pickMedia 相同）。picker 的导航界面就是「文件」App 的，
+    /// 可进 NAS、逐层进文件夹，选中视频（可多选）。
+    private static let smbPickTypes: [UTType] = [.movie, .video, .mpeg4Movie, .quickTimeMovie]
 
     private var mediaDir: URL {
         let dir = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
@@ -94,17 +93,8 @@ public class LocalMediaPlugin: CAPPlugin, CAPBridgedPlugin, WKURLSchemeHandler, 
     /// pickMedia 的异步回调 id（文件选择器回调时再取回 call）
     private var pendingPickId: String?
 
-    /// browseSMB 的异步回调 id
+    /// browseSMB 的异步回调 id（SMB picker 模式；didPickDocumentsAt 见它已设置就走流式登记、不拷贝）
     private var pendingSMBBrowseId: String?
-
-    /// 当前展示的文档浏览器（用于点中视频后整体关闭）
-    private var smbBrowser: UIDocumentBrowserViewController?
-
-    /// 本次浏览要直连的共享目录（smb://host[:port]/share）
-    private var smbRootURL: URL?
-
-    /// 测试模式：文档浏览器打开本地目录（不碰 SMB），用于二分定位崩溃源
-    private var smbTestMode = false
 
     /// SMB 会话文件：名称 → 安全作用域 URL（保持 startAccessing 直到 release）
     private var smbFiles: [String: URL] = [:]
@@ -206,15 +196,21 @@ public class LocalMediaPlugin: CAPPlugin, CAPBridgedPlugin, WKURLSchemeHandler, 
         }
     }
 
-    // MARK: - SMB（系统文档浏览器：进入 NAS 目录树浏览，点中视频即流式播放）
+    // MARK: - SMB（系统文件选择器：「文件」App 导航界面进 NAS，点视频即流式播放）
 
+    /// v1.1.12：改回 UIDocumentPickerViewController（asCopy:false 原地读取、不下载）。
+    /// 文档浏览器（UIDocumentBrowserViewController）实测弃用：本 iOS 26 环境下它的
+    /// delegate 回调（initialURLsForListingIn / previewViewControllerFor / didFailToRead）
+    /// 全部从不触发，点文件永远走系统 QuickLook 预览、播不了 smb:// 流。
+    /// picker 的 didPickDocumentsAt 是协议必需方法（Swift 自动暴露），自 v1.0.0 起 100% 可靠
+    /// （pickMedia 路径）。picker 的导航界面就是「文件」App 的：可进 NAS、逐层进文件夹、选视频（可多选）。
+    /// v1.1.0 曾闪退是 present 在后台队列 "bridge" 上调用所致，v1.1.6 起一律主线程 present。
     @objc func browseSMB(_ call: CAPPluginCall) {
-        // 同 pickMedia：插件方法在 Capacitor 后台队列 "bridge" 上执行，present 必须切主线程
         DispatchQueue.main.async {
             let host = call.options["host"] as? String ?? ""
             let port = (call.options["port"] as? NSNumber)?.stringValue ?? ""
             let share = call.options["share"] as? String ?? ""
-            Log.write("browseSMB 开始 host=\(host) port=\(port) share=\(share)")
+            Log.write("browseSMB 开始 host=\(host) port=\(port) share=\(share)（picker 模式）")
             guard !host.isEmpty else {
                 Log.write("browseSMB 失败：缺少 host")
                 call.reject("missing host")
@@ -225,59 +221,13 @@ public class LocalMediaPlugin: CAPPlugin, CAPBridgedPlugin, WKURLSchemeHandler, 
                 call.reject("no presentation anchor")
                 return
             }
-            guard !share.isEmpty else {
-                Log.write("browseSMB 失败：共享文件夹名为空")
-                call.reject("missing share（请在添加源时填写共享文件夹名，例如 video）")
-                return
-            }
-            // v1.1.7：直连服务器根 smb://host[:port]（先列共享）。
-            // 深层 smb://host/share 在 SMB 会话未建立时解析为空列表且不报错；
-            // 先进根目录列出共享（同「文件」App 的路径）会激活会话，用户点共享名即进入。
-            var urlString = "smb://" + host
-            if !port.isEmpty, let p = Int(port), p > 0 { urlString += ":" + String(p) }
-            guard let smbURL = URL(string: urlString) else {
-                call.reject("bad smb url: \(urlString)")
-                return
-            }
-            self.smbRootURL = smbURL
-            Log.write("browseSMB 锚点=\(type(of: anchor))，直连服务器根 \(urlString)（主线程，目标共享=\(share)）")
-            // v1.1.10 关键修复：必须用文档化的 init(forOpening:) 创建文档浏览器。
-            // 之前用裸 init()（继承自 UIViewController）创建的浏览器处于未初始化浏览状态，
-            // 从不去问 delegate 的 initialURLsForListingIn —— 这就是日志里始终没有
-            // "documentBrowser 直连 smb://…" 回调行、浏览器一直显示默认本地位置的根因。
-            let browser = UIDocumentBrowserViewController(forOpening: Self.browseContentTypes)
-            browser.delegate = self
-            // 创建/删除/重命名/移动默认都是 false，正好只要「浏览 + 打开」
-            self.smbBrowser = browser
+            Log.write("browseSMB 锚点=\(type(of: anchor)) 开始展示系统选择器（主线程，目标共享=\(share)）")
+            let picker = UIDocumentPickerViewController(forOpeningContentTypes: Self.smbPickTypes, asCopy: false)
+            picker.allowsMultipleSelection = true
+            picker.delegate = self
             self.bridge?.saveCall(call)
             self.pendingSMBBrowseId = call.callbackId
-            Log.write("browseSMB 调用 present(animated:) …")
-            anchor.present(browser, animated: true)
-            Log.write("browseSMB present 返回，浏览器已展示（若下一步日志出现 documentBrowser 直连 smb://… 说明回调已通）")
-        }
-    }
-
-    /// 诊断用：文档浏览器打开 App 自己的本地目录（完全不碰 SMB）。
-    /// v1.1.6 起 present 已切主线程，此按钮应能正常弹出（不再闪退），可用于验证文档浏览器整体可用。
-    @objc func testBrowserLocal(_ call: CAPPluginCall) {
-        DispatchQueue.main.async {
-            Log.write("testBrowserLocal 开始（本地目录，无 SMB）")
-            guard let anchor = self.presentingAnchor() else {
-                call.reject("no presentation anchor")
-                return
-            }
-            let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-            self.smbRootURL = docs
-            self.smbTestMode = true
-            Log.write("testBrowserLocal 锚点=\(type(of: anchor))，直连 \(docs.path)（主线程）")
-            // v1.1.10：同 browseSMB，用 init(forOpening:) 创建，保证 delegate 初始地址回调被调用
-            let browser = UIDocumentBrowserViewController(forOpening: Self.browseContentTypes)
-            browser.delegate = self
-            self.smbBrowser = browser
-            self.bridge?.saveCall(call)
-            self.pendingSMBBrowseId = call.callbackId
-            anchor.present(browser, animated: true)
-            Log.write("testBrowserLocal present 返回")
+            anchor.present(picker, animated: true)
         }
     }
 
@@ -357,7 +307,29 @@ public class LocalMediaPlugin: CAPPlugin, CAPBridgedPlugin, WKURLSchemeHandler, 
         Log.write("documentPicker 选中 \(urls.count) 个文件")
         controller.dismiss(animated: true)
 
-        // 普通导入：拷贝进 App 缓存目录
+        // SMB 流式模式（browseSMB，asCopy:false）：不拷贝，保持安全作用域访问登记进会话表，播放器直接从 NAS 流式读
+        if let id = pendingSMBBrowseId {
+            pendingSMBBrowseId = nil
+            var results: [[String: Any]] = []
+            for url in urls {
+                let key = uniqueSMBName(url.lastPathComponent)
+                url.startAccessingSecurityScopedResource()
+                smbFiles[key] = url
+                let size = (try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0
+                Log.write("SMB 登记 \(key) <- \(url)")
+                results.append([
+                    "name": key,
+                    "size": size,
+                    "kind": "video",
+                    "url": "localmedia://smb/\(key.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? key)"
+                ])
+            }
+            resolveSaved(id, data: ["files": results])
+            Log.write("SMB 回调 JS，\(results.count) 个文件")
+            return
+        }
+
+        // 普通导入（pickMedia，asCopy:true）：拷贝进 App 缓存目录
         var results: [[String: Any]] = []
         for url in urls {
             let name = url.lastPathComponent
@@ -388,102 +360,15 @@ public class LocalMediaPlugin: CAPPlugin, CAPBridgedPlugin, WKURLSchemeHandler, 
     public func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) {
         Log.write("documentPicker 取消")
         controller.dismiss(animated: true)
+        if let id = pendingSMBBrowseId {
+            pendingSMBBrowseId = nil
+            resolveSaved(id, data: ["files": []])
+            return
+        }
         if let id = pendingPickId {
             resolveSaved(id, data: ["files": []])
         }
         pendingPickId = nil
-    }
-
-    // MARK: - UIDocumentBrowserDelegate（SMB 目录浏览）
-
-    /// 首次进入：直接给出 smb:// 服务器根（列共享）或本地测试目录，不枚举全部位置。
-    /// v1.1.8：@objc 必须——协议是 ObjC 的，缺 @objc 时运行时找不到此回调，浏览器显示默认本地位置
-    @objc public func documentBrowser(_ controller: UIDocumentBrowserViewController,
-                                      initialURLsForListingIn bookmarkData: Data,
-                                      completionHandler: @escaping ([URL]?, Error?) -> Void) {
-        if let root = smbRootURL {
-            Log.write("documentBrowser 直连 \(root)")
-            completionHandler([root], nil)
-        } else {
-            Log.write("documentBrowser 无直连地址，回退显示全部位置")
-            completionHandler(nil, nil)
-        }
-    }
-
-    /// 读取目录失败（smb:// 不被识别 / 认证失败 / 网络不通）→ 通知 JS 显示指引（v1.1.8 加 @objc）
-    @objc public func documentBrowser(_ controller: UIDocumentBrowserViewController,
-                                      didFailToReadDirectoryContentsOf url: URL,
-                                      withError error: Error) {
-        Log.write("documentBrowser 读目录失败 \(url) error=\(error.localizedDescription)")
-        controller.dismiss(animated: true)
-        if let id = pendingSMBBrowseId {
-            resolveSaved(id, data: ["files": [], "error": error.localizedDescription])
-            pendingSMBBrowseId = nil
-        }
-        smbBrowser = nil
-        smbRootURL = nil
-    }
-
-    /// 点中文件 → 返回预览页（视频显示「播放」按钮，点一下就登记并播放）。
-    /// v1.1.11：恢复 completionHandler 版代理——iOS 26 实测只调用这个版本。
-    /// v1.1.8 曾误判"异步版无法被 ObjC 运行时发现"换成同步版，结果点中文件走系统 QuickLook
-    /// （从 SMB 流式拉视频/图片做预览，几秒一个、非常卡，且没有"用本 App 播放"入口）。
-    /// 闭包参数在 ObjC 里就是 block，@objc 可正常暴露。返回自绘预览页 = 秒开、不拉流预览、点按钮才播放。
-    @objc public func documentBrowser(_ controller: UIDocumentBrowserViewController,
-                                       previewViewControllerFor url: URL,
-                                       completionHandler: @escaping (UIViewController?, Error?) -> Void) {
-        if smbTestMode {
-            Log.write("documentBrowser [测试模式] 点中本地文件 \(url.lastPathComponent)（仅日志，不播放）")
-            completionHandler(nil, nil)
-            return
-        }
-        Log.write("documentBrowser 点中文件 \(url.lastPathComponent) (\(url))")
-        // 无扩展名的条目（如点中共享名本身）返回 nil → 浏览器直接钻进目录，不弹预览
-        if url.pathExtension.isEmpty {
-            Log.write("documentBrowser 目录项，进入 \(url)")
-            completionHandler(nil, nil)
-            return
-        }
-        let isVideo = Self.videoExts.contains(url.pathExtension.lowercased())
-        completionHandler(SMBPreviewViewController(fileName: url.lastPathComponent, isVideo: isVideo) { [weak self] in
-            self?.registerSMBFileAndFinish(url)
-        }, nil)
-    }
-
-    /// 同步版预览代理（保留作旧系统回退路径；iOS 26 实测不调用它）
-    @objc public func documentBrowser(_ controller: UIDocumentBrowserViewController,
-                                       previewViewControllerFor url: URL) -> UIViewController? {
-        Log.write("documentBrowser [同步版] 点中文件 \(url.lastPathComponent)")
-        if smbTestMode { return nil }
-        if url.pathExtension.isEmpty { return nil }
-        let isVideo = Self.videoExts.contains(url.pathExtension.lowercased())
-        return SMBPreviewViewController(fileName: url.lastPathComponent, isVideo: isVideo) { [weak self] in
-            self?.registerSMBFileAndFinish(url)
-        }
-    }
-
-    /// 登记 SMB 文件（保持安全作用域访问）→ 关闭浏览器 → 回调 JS
-    private func registerSMBFileAndFinish(_ url: URL) {
-        Log.write("registerSMBFileAndFinish \(url.lastPathComponent)")
-        let key = uniqueSMBName(url.lastPathComponent)
-        url.startAccessingSecurityScopedResource()
-        smbFiles[key] = url
-        let size = (try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0
-        let file: [String: Any] = [
-            "name": key,
-            "size": size,
-            "kind": "video",
-            "url": "localmedia://smb/\(key.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? key)"
-        ]
-        smbBrowser?.dismiss(animated: true) { [weak self] in
-            guard let self else { return }
-            if let id = self.pendingSMBBrowseId {
-                self.resolveSaved(id, data: ["files": [file]])
-                self.pendingSMBBrowseId = nil
-            }
-            self.smbBrowser = nil
-            Log.write("registerSMBFileAndFinish 浏览器已关闭，回调 JS")
-        }
     }
 
     /// SMB 会话表内的唯一名称（同名追加序号）
@@ -689,80 +574,5 @@ public class LocalMediaPlugin: CAPPlugin, CAPBridgedPlugin, WKURLSchemeHandler, 
             vc = presented
         }
         return vc
-    }
-}
-
-/// SMB 文件预览页：视频显示「播放」按钮，非视频显示提示
-private final class SMBPreviewViewController: UIViewController {
-    private let fileName: String
-    private let isVideo: Bool
-    private let onPlay: () -> Void
-
-    init(fileName: String, isVideo: Bool, onPlay: @escaping () -> Void) {
-        self.fileName = fileName
-        self.isVideo = isVideo
-        self.onPlay = onPlay
-        super.init(nibName: nil, bundle: nil)
-    }
-
-    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
-
-    override func viewDidLoad() {
-        super.viewDidLoad()
-        view.backgroundColor = .black
-        modalPresentationStyle = .fullScreen
-
-        let icon = UILabel()
-        icon.text = isVideo ? "🎬" : "📄"
-        icon.font = .systemFont(ofSize: 56)
-        icon.textAlignment = .center
-        icon.translatesAutoresizingMaskIntoConstraints = false
-
-        let name = UILabel()
-        name.text = fileName
-        name.font = .systemFont(ofSize: 17, weight: .medium)
-        name.textColor = .white
-        name.textAlignment = .center
-        name.numberOfLines = 0
-        name.translatesAutoresizingMaskIntoConstraints = false
-
-        let sub = UILabel()
-        sub.text = isVideo ? "点下方按钮，直接从 NAS 流式播放" : "不是视频文件"
-        sub.font = .systemFont(ofSize: 13)
-        sub.textColor = .gray
-        sub.textAlignment = .center
-        sub.translatesAutoresizingMaskIntoConstraints = false
-
-        let stack = UIStackView(arrangedSubviews: [icon, name, sub])
-        stack.axis = .vertical
-        stack.spacing = 12
-        stack.translatesAutoresizingMaskIntoConstraints = false
-        view.addSubview(stack)
-
-        let btnTitle = isVideo ? "▶  播放这个视频" : "关闭"
-        let btn = UIButton(type: .system)
-        btn.setTitle(btnTitle, for: .normal)
-        btn.titleLabel?.font = .systemFont(ofSize: 17, weight: .semibold)
-        btn.backgroundColor = isVideo ? .systemBlue : .darkGray
-        btn.setTitleColor(.white, for: .normal)
-        btn.layer.cornerRadius = 12
-        btn.translatesAutoresizingMaskIntoConstraints = false
-        btn.addAction(UIAction { [weak self] _ in
-            if self?.isVideo == true { self?.onPlay() }
-            else { self?.dismiss(animated: true) }
-        }, for: .touchUpInside)
-        view.addSubview(btn)
-
-        NSLayoutConstraint.activate([
-            stack.centerXAnchor.constraint(equalTo: view.centerXAnchor),
-            stack.centerYAnchor.constraint(equalTo: view.centerYAnchor, constant: -40),
-            stack.leadingAnchor.constraint(greaterThanOrEqualTo: view.leadingAnchor, constant: 32),
-            stack.trailingAnchor.constraint(lessThanOrEqualTo: view.trailingAnchor, constant: -32),
-            btn.centerXAnchor.constraint(equalTo: view.centerXAnchor),
-            btn.topAnchor.constraint(equalTo: stack.bottomAnchor, constant: 36),
-            btn.leadingAnchor.constraint(greaterThanOrEqualTo: view.leadingAnchor, constant: 32),
-            btn.trailingAnchor.constraint(lessThanOrEqualTo: view.trailingAnchor, constant: -32),
-            btn.heightAnchor.constraint(equalToConstant: 50)
-        ])
     }
 }

@@ -7,7 +7,7 @@ import { openPlayer } from '../player/player';
 import { nav } from '../router';
 import { confirmDialog, modal, promptDialog, toast } from '../components/ui';
 import { fmtSize, escapeHtml, isVideoName } from '../core/util';
-import { browseSMB, listSMBFiles, pickMedia, testBrowserLocal } from '../native/localMedia';
+import { browseSMB, listSMBFiles, pickMedia } from '../native/localMedia';
 import { addLocalFiles } from '../core/store';
 
 export function renderBrowse(el: HTMLElement, hash: string): void {
@@ -314,10 +314,11 @@ function fmtDur(sec: number): string {
 }
 
 // ---- SMB 浏览（iOS 系统「文件」App 的 SMB 支持：文档浏览器流式 + 拷贝下载） ----
-// v1.1.6：.ips 崩溃日志实锤根因——Capacitor 7 把插件方法调度到后台串行队列 "bridge" 上执行，
-// 旧代码在该队列里直接 present() 文档浏览器 → UIKit 视图控制器层级检查断言 → SIGABRT。
-// Swift 端已改为切主线程 present，恢复「进入 NAS 浏览」流式为主路线（VidHub 体验，不占存储），
-// 下载路线保留为备选，两条路都可用。
+// v1.1.12：SMB 改回系统文件选择器（picker，asCopy:false 流式、不下载）。
+// 文档浏览器（UIDocumentBrowserViewController）的 delegate 回调在本 iOS 26 环境全部从不触发，
+// 点文件永远走系统 QuickLook、播不了 smb:// 流。picker 的导航界面就是「文件」App 的：
+// 进 NAS → 进共享文件夹 → 选视频（可多选）→ 点右上角「选取」即流式播放。
+// 下载路线（asCopy:true）保留为备选。
 
 function renderSMBBrowser(body: HTMLElement, source: Source): void {
   body.innerHTML = `
@@ -339,25 +340,23 @@ function renderSMBBrowser(body: HTMLElement, source: Source): void {
         <div>共享：<b>${escapeHtml(source.share || '—')}</b></div>
       </div>
       <p class="smb-note">对应 Windows 路径 \\\\${escapeHtml(source.host)}\\${escapeHtml(source.share || 'video')} 。
-      点「进入 NAS 浏览」后，<b>先点一下共享名「${escapeHtml(source.share || 'video')}」</b>进入文件夹，再点视频即播（流式，不占手机存储）；「浏览并下载」先存到手机再播（备选）。</p>
+      点「从 NAS 选视频」后在弹出的系统选择器里<b>点进你的 NAS 服务器 → 共享文件夹「${escapeHtml(source.share || 'video')}」→ 选视频（可多选）→ 右上角「选取」</b>，即流式播放（不占手机存储）。</p>
     </div>
-    <button class="app-btn primary smb-pick">📂 进入 NAS 浏览（流式播放，不下载）</button>
-    <button class="app-btn smb-dl" style="margin-top:8px;width:100%">📥 浏览并下载 NAS 视频（下载后播放）</button>
+    <button class="app-btn primary smb-pick">📂 从 NAS 选视频（流式播放，不下载）</button>
+    <button class="app-btn smb-dl" style="margin-top:8px;width:100%">📥 下载 NAS 视频到手机（离线播放）</button>
     <button class="app-btn smb-subs" style="margin-top:8px;width:100%">💬 下载 NAS 字幕（与视频同名自动加载）</button>
-    <button class="app-btn smb-test" style="margin-top:8px;width:100%">🧪 测试本地目录（诊断，不碰 NAS）</button>
     <div id="smb-files" class="br-items"></div>
   `;
   body.querySelector('#smb-back')!.addEventListener('click', () => nav('#/browse'));
   body.querySelector('.smb-pick')!.addEventListener('click', () => void doBrowseSMB(body, source));
   body.querySelector('.smb-dl')!.addEventListener('click', () => void doPickFromNAS(false));
   body.querySelector('.smb-subs')!.addEventListener('click', () => void doPickFromNAS(true));
-  body.querySelector('.smb-test')!.addEventListener('click', () => void doTestLocal(source));
   void refreshSMBFiles(body);
 }
 
-/** 系统文档浏览器直连 smb://host/share 进入 NAS 目录树，点中视频即流式播放 */
+/** 系统文件选择器进 NAS 目录树，选中视频即流式播放（可多选） */
 async function doBrowseSMB(body: HTMLElement, source: Source): Promise<void> {
-  toast('正在进入 NAS…');
+  toast('在选择器里：点进 NAS 服务器 → 共享文件夹 → 选视频 → 右上角「选取」');
   const res = await browseSMB({ host: source.host, port: source.port, share: source.share });
   if (res.files.length === 0) {
     if (res.error) {
@@ -368,7 +367,7 @@ async function doBrowseSMB(body: HTMLElement, source: Source): Promise<void> {
     return;
   }
   await refreshSMBFiles(body);
-  // 点中即播：直接打开用户选中的视频
+  // 选中即播：直接打开用户选中的第一个视频（其余进会话列表可重播）
   openPlayer('smb:' + res.files[0].name);
 }
 
@@ -398,20 +397,7 @@ async function refreshSMBFiles(body: HTMLElement): Promise<void> {
   }
 }
 
-/** 诊断：同一个文档浏览器打开 App 本地目录（不碰 NAS）。v1.1.6 主线程修复后应正常弹出。 */
-async function doTestLocal(_source: Source): Promise<void> {
-  toast('测试模式：弹出的浏览器里随便点点，然后返回关闭');
-  const res = await testBrowserLocal();
-  if (res.error === 'timeout') {
-    toast('✓ 未闪退（关闭了浏览器）。文档浏览器可用');
-  } else if (res.error) {
-    toast('测试出错：' + res.error);
-  } else {
-    toast('✓ 未闪退。文档浏览器可用');
-  }
-}
-
-/** 用系统文件选择器（asCopy:true，已验证不闪退）从 NAS 下载视频/字幕到本地媒体库 */
+/** 用系统文件选择器（asCopy:true）从 NAS 下载视频/字幕到本地媒体库（离线播放备选路线） */
 async function doPickFromNAS(subtitles: boolean): Promise<void> {
   toast(subtitles ? '选到 NAS 里的字幕文件后点右上角「选取」' : '进入 NAS 文件夹选视频（可多选），点「选取」后自动下载并播放');
   const files = await pickMedia(subtitles);
