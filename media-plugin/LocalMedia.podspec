@@ -16,6 +16,10 @@ DESC
   # 本地 :path 开发 pod 不会真的去拉这个 git 源，但 CocoaPods 校验要求 source 属性存在
   s.source       = { :git => 'https://github.com/DarkAlucard007/player-ios.git', :tag => s.version.to_s }
   s.source_files   = 'Sources/**/*.swift'
+  # v1.1.17：播放自测样本（Big Buck Bunny 10 秒 788KB H.264+AAC）。
+  # use_frameworks! 下 CocoaPods 会生成 LocalMedia.bundle 嵌进
+  # LocalMedia.framework/，运行时 Bundle(for:).url(forResource:) 可取到。
+  s.resources      = ['Resources/sample.mp4']
   s.dependency 'Capacitor'
   s.swift_version  = '5.0'
   # 注意：不要加 static_framework。use_frameworks! 下默认动态 framework 才会被

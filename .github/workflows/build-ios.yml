@@ -1,4 +1,4 @@
-name: 构建 App (iOS IPA)
+﻿name: 构建 App (iOS IPA)
 
 # 手动触发：Actions → 构建 App (iOS IPA) → Run workflow
 # 也可以由 upload-tools/build-ipa.mjs 通过 API 自动触发（推荐）。
@@ -284,6 +284,12 @@ jobs:
                           break
               assert found, 'MISSING SYMBOL: ' + sym
               print('symbol OK:', sym)
+
+          # v1.1.17：播放自测样本必须随框架打包（Resources → LocalMedia.bundle），
+          # 缺失则装机后「播放自测」第一步就会失败，不如在云端直接拦下
+          samples = glob.glob(os.path.join(app, 'Frameworks', '*.framework', '**', 'sample.mp4'), recursive=True)
+          assert samples, 'sample.mp4 NOT bundled in any framework (pod Resources not effective)'
+          print('sample.mp4 OK:', samples)
           print('archive verification OK')
           PY
           then

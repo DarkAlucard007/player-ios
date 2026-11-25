@@ -28,6 +28,7 @@ interface LocalMediaPluginInterface {
   releaseSMBFile(options: { name: string }): Promise<{ ok: boolean }>;
   readLog(): Promise<{ log: string }>;
   clearLog(): Promise<{ ok: boolean }>;
+  selfTest(): Promise<{ name: string; size: number }>;
 }
 
 export const LocalMedia = registerPlugin<LocalMediaPluginInterface>('LocalMedia');
@@ -44,7 +45,7 @@ export function localUrl(name: string): string | null {
   return webFileUrls.get(name) ?? null;
 }
 
-/** SMB 会话文件的播放 URL（真机：localmedia:///smb%2F<name>，单段路径——WKWebView 媒体引擎对自定义 scheme 多段路径会在抓取前判 code=4 源不受支持；%2F 会被 url.path 解码回 /smb/<name>，handler 的 hasPrefix("smb/") 照常命中）；浏览器模式无 SMB */
+/** SMB 会话文件的播放 URL（真机：localmedia:///smb%2F<name>，单段路径——WKWebView 媒体引擎对自定义 scheme 多段路径会在抓取前判 code=4 源不受支持；%2F 由原生 handler 显式解码回 /smb/<name> 再路由，v1.1.17 修复）；浏览器模式无 SMB */
 export function smbUrl(name: string): string | null {
   if (isNative || !hasDom) return 'localmedia:///smb%2F' + encodeURIComponent(name);
   return null;
@@ -192,6 +193,13 @@ export async function readLog(): Promise<string> {
 
 export async function clearLog(): Promise<void> {
   if (isNative) await LocalMedia.clearLog();
+}
+
+/** 播放自测：让原生层把内置 sample.mp4 复制进媒体缓存目录，返回文件名与大小。
+ *  仅原生端可用；浏览器端 reject（自测没有意义）。 */
+export async function selfTest(): Promise<{ name: string; size: number }> {
+  if (!isNative) throw new Error('播放自测仅原生端可用');
+  return LocalMedia.selfTest();
 }
 
 /** 读取本地字幕/文本文件内容（localmedia:// URL 或 object URL） */

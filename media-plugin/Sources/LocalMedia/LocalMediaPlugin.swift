@@ -33,7 +33,8 @@ public class LocalMediaPlugin: CAPPlugin, CAPBridgedPlugin, WKURLSchemeHandler, 
         CAPPluginMethod(name: "listSMBFiles", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "releaseSMBFile", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "readLog", returnType: CAPPluginReturnPromise),
-        CAPPluginMethod(name: "clearLog", returnType: CAPPluginReturnPromise)
+        CAPPluginMethod(name: "clearLog", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "selfTest", returnType: CAPPluginReturnPromise)
     ]
 
     // MARK: - 调试日志（同步写文件：闪退后日志依然存活，供 App 内查看/复制）
@@ -102,6 +103,48 @@ public class LocalMediaPlugin: CAPPlugin, CAPBridgedPlugin, WKURLSchemeHandler, 
     private var smbFiles: [String: URL] = [:]
     /// SMB 会话文件的类型（video/subtitle/other），listSMBFiles 时回传，前端据此区分
     private var smbKinds: [String: String] = [:]
+
+    // MARK: - 播放自测（装机一键验证：样本复制 → scheme handler → 媒体引擎）
+
+    private static let selfTestName = "selftest-sample.mp4"
+
+    /// 把内置 sample.mp4（Big Buck Bunny 10 秒，788 KB，H.264+AAC）复制进媒体缓存目录，
+    /// 返回文件名与大小。前端用它构造 localmedia:// URL，依次做 Range 探测和
+    /// <video> 真实播放，一键证明"原生层能播视频"——不再依赖用户手动导入。
+    @objc func selfTest(_ call: CAPPluginCall) {
+        let dest = mediaDir.appendingPathComponent(Self.selfTestName)
+        if !FileManager.default.fileExists(atPath: dest.path) {
+            guard let src = sampleResourceURL() else {
+                Log.write("selfTest 失败：找不到内置 sample.mp4 资源（pod Resources 未生效？）")
+                call.reject("sample.mp4 resource missing (pod Resources not effective?)")
+                return
+            }
+            do {
+                try FileManager.default.copyItem(at: src, to: dest)
+                Log.write("selfTest 已复制内置样本 → \(dest.path)")
+            } catch {
+                Log.write("selfTest 复制失败：\(error.localizedDescription)")
+                call.reject("sample copy failed: \(error.localizedDescription)")
+                return
+            }
+        }
+        let size = (try? dest.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0
+        call.resolve(["name": Self.selfTestName, "size": size])
+    }
+
+    private func sampleResourceURL() -> URL? {
+        // CocoaPods 动态库：Resources/sample.mp4 → LocalMedia.framework/LocalMedia.bundle/sample.mp4
+        for bundle in [Bundle(for: Self.self), Bundle.main] {
+            if let u = bundle.url(forResource: "sample", withExtension: "mp4") {
+                return u
+            }
+            if let rb = bundle.url(forResource: "LocalMedia", withExtension: "bundle"),
+               let inner = Bundle(url: rb), let u = inner.url(forResource: "sample", withExtension: "mp4") {
+                return u
+            }
+        }
+        return nil
+    }
 
     @objc func readLog(_ call: CAPPluginCall) {
         call.resolve(["log": Log.tail(400)])
@@ -251,7 +294,7 @@ public class LocalMediaPlugin: CAPPlugin, CAPBridgedPlugin, WKURLSchemeHandler, 
     @objc func listSMBFiles(_ call: CAPPluginCall) {
         var files: [[String: Any]] = []
         for (name, url) in smbFiles {
-            let size = (try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0
+            let size = smbFileSize(url)
             files.append(["name": name, "size": size, "kind": smbKinds[name] ?? "video"])
         }
         files.sort { ($0["name"] as? String ?? "") < ($1["name"] as? String ?? "") }
@@ -320,7 +363,7 @@ public class LocalMediaPlugin: CAPPlugin, CAPBridgedPlugin, WKURLSchemeHandler, 
                 let key = uniqueSMBName(url.lastPathComponent)
                 url.startAccessingSecurityScopedResource()
                 smbFiles[key] = url
-                let size = (try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0
+                let size = smbFileSize(url)
                 let ext = url.pathExtension.lowercased()
                 let kind: String
                 if Self.subtitleExts.contains(ext) {
@@ -386,6 +429,14 @@ public class LocalMediaPlugin: CAPPlugin, CAPBridgedPlugin, WKURLSchemeHandler, 
         pendingPickId = nil
     }
 
+    /// SMB 文件大小：.fileSizeKey 在 SMB 远程文件上可能为 nil，兜底 .totalFileLengthKey
+    private func smbFileSize(_ url: URL) -> Int64 {
+        if let v = try? url.resourceValues(forKeys: [.fileSizeKey, .totalFileLengthKey]) {
+            return Int64(v.fileSize ?? v.totalFileLength ?? 0)
+        }
+        return 0
+    }
+
     /// SMB 会话表内的唯一名称（同名追加序号）
     private func uniqueSMBName(_ name: String) -> String {
         var candidate = name
@@ -410,7 +461,13 @@ public class LocalMediaPlugin: CAPPlugin, CAPBridgedPlugin, WKURLSchemeHandler, 
         }
         let range = urlSchemeTask.request.value(forHTTPHeaderField: "Range") ?? "-"
         Log.write("scheme 请求 \(url.path) range=\(range)")
-        var path = url.path
+        // v1.1.17 修复：Foundation 的 URL.path 不会解码 %2F（只有 iOS 16+ 的
+        // path(percentEncoded: false) 才解）。browseSMB 返回的 URL 是单段
+        // "smb%2F<文件名>"，不解码的话 hasPrefix("smb/") 永远 false → 落入
+        // else 分支去找一个字面叫 "smb%2F<文件名>" 的本地文件 → 404 → 媒体引擎
+        // 报 code=4。v1.1.16 交付说明里"url.path 自动把 %2F 解码回 /smb/"的说法
+        // 不成立（那是 v1.1.15 旧 URL 形式 localmedia:///smb/<name> 的行为）。
+        var path = url.path.replacingOccurrences(of: "%2F", with: "/")
         if path.hasPrefix("/") { path.removeFirst() }
         guard !path.isEmpty else {
             urlSchemeTask.didFailWithError(Self.error(404, "empty path"))
@@ -420,6 +477,7 @@ public class LocalMediaPlugin: CAPPlugin, CAPBridgedPlugin, WKURLSchemeHandler, 
         let fileURL: URL
         if path.hasPrefix("smb/") {
             let key = String(path.dropFirst(4))
+            Log.write("scheme 路由 SMB 会话文件 key=\(key) 现有会话=\(Array(smbFiles.keys))")
             guard let smbURL = smbFiles[key] else {
                 urlSchemeTask.didFailWithError(Self.error(404, "smb file not in session: " + key))
                 return
@@ -432,11 +490,23 @@ public class LocalMediaPlugin: CAPPlugin, CAPBridgedPlugin, WKURLSchemeHandler, 
                 return
             }
         }
-        let fileSize = Int64((try? fileURL.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0)
+        // v1.1.17 修复：SMB 流式文件 .fileSizeKey 可能取不到（nil）。
+        // 旧代码 total=0 时：200 响应 Content-Length:0（媒体引擎拿到空文件），
+        // Range 请求 parseRange 的 start<total 判断全失败 → 也落到 CL:0。
+        // 现在 0 表示"长度未知"：响应不带 Content-Length（HTTP 分块传输），
+        // 从偏移流读到 EOF，媒体引擎照常边下边播。
+        let fileSize: Int64 = {
+            if let v = try? fileURL.resourceValues(forKeys: [.fileSizeKey, .totalFileLengthKey]),
+               let sz = Int64(v.fileSize ?? v.totalFileLength ?? 0), sz > 0 {
+                return sz
+            }
+            return 0
+        }()
+        Log.write("scheme 文件 \(fileURL.lastPathComponent) 总长度=\(fileSize)（0=未知，分块流式）")
         let mime = Self.mimeType(for: fileURL.pathExtension)
 
-        if let rangeHeader = urlSchemeTask.request.value(forHTTPHeaderField: "Range"),
-           let (start, end) = Self.parseRange(rangeHeader, total: fileSize) {
+        let rangeHeader = urlSchemeTask.request.value(forHTTPHeaderField: "Range")
+        if fileSize > 0, let rangeHeader, let (start, end) = Self.parseRange(rangeHeader, total: fileSize) {
             let response = HTTPURLResponse(url: url, statusCode: 206, httpVersion: "HTTP/1.1", headerFields: [
                 "Content-Type": mime,
                 "Content-Range": "bytes \(start)-\(end)/\(fileSize)",
@@ -446,7 +516,7 @@ public class LocalMediaPlugin: CAPPlugin, CAPBridgedPlugin, WKURLSchemeHandler, 
             ])!
             urlSchemeTask.didReceive(response)
             stream(fileURL, from: start, length: end - start + 1, task: urlSchemeTask)
-        } else {
+        } else if fileSize > 0 {
             let response = HTTPURLResponse(url: url, statusCode: 200, httpVersion: "HTTP/1.1", headerFields: [
                 "Content-Type": mime,
                 "Accept-Ranges": "bytes",
@@ -455,6 +525,20 @@ public class LocalMediaPlugin: CAPPlugin, CAPBridgedPlugin, WKURLSchemeHandler, 
             ])!
             urlSchemeTask.didReceive(response)
             stream(fileURL, from: 0, length: fileSize, task: urlSchemeTask)
+        } else {
+            // 长度未知（SMB 流）：从 Range 起点（或 0）流到 EOF，无 Content-Length
+            let start: Int64 = {
+                if let rangeHeader, let (s, _) = Self.parseRangeOpen(rangeHeader) { return s }
+                return 0
+            }()
+            let headers: [String: String] = [
+                "Content-Type": mime,
+                "Accept-Ranges": "bytes",
+                "Access-Control-Allow-Origin": "*"
+            ]
+            let response = HTTPURLResponse(url: url, statusCode: 200, httpVersion: "HTTP/1.1", headerFields: headers)!
+            urlSchemeTask.didReceive(response)
+            stream(fileURL, from: start, length: -1, task: urlSchemeTask)
         }
     }
 
@@ -484,14 +568,15 @@ public class LocalMediaPlugin: CAPPlugin, CAPBridgedPlugin, WKURLSchemeHandler, 
                 task.didFailWithError(Self.error(500, "seek failed"))
                 return
             }
+            // length == -1：长度未知，一直流到 EOF（readData 返回空即结束）
             let chunk: Int64 = 256 * 1024
             var remaining = length
-            while remaining > 0 && !self.cancelledTasks.contains(taskID) {
-                let n = min(chunk, remaining)
+            while (length < 0 || remaining > 0) && !self.cancelledTasks.contains(taskID) {
+                let n = length < 0 ? chunk : min(chunk, remaining)
                 let data = handle.readData(ofLength: Int(n))
                 if data.isEmpty { break }
                 task.didReceive(data)
-                remaining -= Int64(data.count)
+                if length >= 0 { remaining -= Int64(data.count) }
             }
             if !self.cancelledTasks.contains(taskID) {
                 task.didFinish()
@@ -540,6 +625,16 @@ public class LocalMediaPlugin: CAPPlugin, CAPBridgedPlugin, WKURLSchemeHandler, 
         }
         out.sort { ($0["modifiedAt"] as? Double ?? 0) > ($1["modifiedAt"] as? Double ?? 0) }
         return out
+    }
+
+    /// 只解析 Range 头的起始偏移（用于长度未知时的流式起点），不做 total 校验
+    private static func parseRangeOpen(_ header: String) -> (Int64, Int64)? {
+        let parts = header.components(separatedBy: "=")
+        guard parts.count == 2, parts[0].trimmingCharacters(in: .whitespaces) == "bytes" else { return nil }
+        let bounds = parts[1].trimmingCharacters(in: .whitespaces).components(separatedBy: "-")
+        guard bounds.count == 2, !bounds[0].isEmpty, let start = Int64(bounds[0]), start >= 0 else { return nil }
+        let end = bounds[1].isEmpty ? -1 : (Int64(bounds[1]) ?? -1)
+        return (start, end)
     }
 
     private static func parseRange(_ header: String, total: Int64) -> (Int64, Int64)? {

@@ -6,6 +6,12 @@ import { pickMedia, clearLocalCache, isNative } from '../native/localMedia';
 import { confirmDialog, toast } from '../components/ui';
 import { fmtSize } from '../core/util';
 
+// 模块级监听器：每次进媒体库都重新绑定会累积（旧 AI 遗留的泄漏）
+let libraryBodyEl: HTMLElement | null = null;
+window.addEventListener('app:refresh', () => {
+  if (libraryBodyEl && libraryBodyEl.isConnected) renderBody(libraryBodyEl);
+});
+
 export function renderLibrary(el: HTMLElement): void {
   el.innerHTML = `
     <div class="page-head">
@@ -17,11 +23,8 @@ export function renderLibrary(el: HTMLElement): void {
     <div id="lib-body"></div>
   `;
   el.querySelector('#lib-add')!.addEventListener('click', () => void doImport());
-  renderBody(el.querySelector('#lib-body')!);
-  window.addEventListener('app:refresh', onRefresh);
-  function onRefresh(): void {
-    renderBody(el.querySelector('#lib-body')!);
-  }
+  libraryBodyEl = el.querySelector('#lib-body')!;
+  renderBody(libraryBodyEl);
 }
 
 async function doImport(): Promise<void> {

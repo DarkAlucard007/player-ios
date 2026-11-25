@@ -1,7 +1,7 @@
 // 设置：默认倍速 / 自动连播 / 字幕样式 / 清空缓存 / 关于
 
 import { state, setSettings, clearLibrary } from '../core/store';
-import { clearLocalCache, isNative, readLog, clearLog } from '../native/localMedia';
+import { clearLocalCache, isNative, readLog, clearLog, selfTest, localUrl } from '../native/localMedia';
 import { confirmDialog, toast, modal } from '../components/ui';
 import { fmtSize, escapeHtml } from '../core/util';
 
@@ -38,6 +38,12 @@ export function renderSettings(el: HTMLElement): void {
         <input type="color" id="set-sub-color" value="${s.subtitleStyle.color}" /></div>
     </div>
     <div class="set-group">
+      <h3>播放自测（装机验证）</h3>
+      <p class="set-about">一键验证原生播放链路：内置样本 → localmedia:// 读取 → 媒体引擎解码。全部通过 = App 本身能播视频，问题只会出在网络源；有失败项 = 点「查看日志」把原生日志发给开发者。</p>
+      <button class="app-btn primary" id="set-selftest" ${isNative ? '' : 'disabled'}>🎬 运行播放自测</button>
+      <div id="selftest-result" class="selftest-box"></div>
+    </div>
+    <div class="set-group">
       <h3>存储</h3>
       <div class="set-row">
         <label>本地缓存</label>
@@ -55,7 +61,7 @@ export function renderSettings(el: HTMLElement): void {
     </div>
     <div class="set-group">
       <h3>关于</h3>
-      <p class="set-about">视频播放器 v1.1.2<br />
+      <p class="set-about">视频播放器 v${__APP_VERSION__}<br />
       仿 VidHub 功能复刻（本地视频 / WebDAV / SMB / Emby / Jellyfin）。<br />
       基于 Web 技术栈 + Capacitor 构建，仅学习研究使用。</p>
     </div>
@@ -87,6 +93,7 @@ export function renderSettings(el: HTMLElement): void {
     el.querySelector(id)!.addEventListener('input', applyStyle);
   }
 
+  el.querySelector('#set-selftest')!.addEventListener('click', () => void runSelfTest(el));
   el.querySelector('#set-log-view')!.addEventListener('click', async () => {
     toast('正在读取日志…');
     const log = await readLog();
@@ -130,4 +137,74 @@ export function renderSettings(el: HTMLElement): void {
     toast('已清空');
     renderSettings(el);
   });
+}
+
+/** 播放自测：内置样本 → Range 探测 → 全量读取 → <video> 真实解码播放。
+ *  每一步都给出 ✓/✗ + 原始数据，失败时提示用户去查调试日志。 */
+async function runSelfTest(el: HTMLElement): Promise<void> {
+  const box = el.querySelector<HTMLElement>('#selftest-result')!;
+  box.innerHTML = '<div class="selftest-row">正在自测…</div>';
+  const row = (label: string, ok: boolean, detail: string): void => {
+    const line = document.createElement('div');
+    line.className = 'selftest-row ' + (ok ? 'ok' : 'fail');
+    line.textContent = (ok ? '✓ ' : '✗ ') + label + '　' + detail;
+    box.appendChild(line);
+  };
+  try {
+    // 1. 样本就绪（原生层把内置 sample.mp4 复制进媒体缓存目录）
+    const st = await selfTest();
+    const url = localUrl(st.name);
+    if (!url) throw new Error('localUrl 返回空');
+    row('内置样本就绪', true, `${st.name} ${fmtSize(st.size)}`);
+
+    // 2. Range 探测（模拟媒体引擎的切片请求）
+    const r = await fetch(url, { headers: { Range: 'bytes=0-99' } });
+    const rb = await r.arrayBuffer();
+    const cr = r.headers.get('content-range') || '（无）';
+    row('Range 请求 206', r.status === 206 && rb.byteLength === 100, `status=${r.status} len=${rb.byteLength} content-range=${cr}`);
+
+    // 3. 全量读取
+    const f = await fetch(url);
+    const fb = await f.arrayBuffer();
+    row('全量请求 200', f.status === 200 && fb.byteLength === st.size, `status=${f.status} len=${fb.byteLength}/${st.size}`);
+
+    // 4/5. 真实播放（媒体引擎解码 + 推进）
+    const v = document.createElement('video');
+    v.muted = true;
+    v.playsInline = true;
+    v.preload = 'auto';
+    v.src = url;
+    v.style.cssText = 'position:fixed;left:-9999px;top:0;width:160px;height:90px;';
+    document.body.appendChild(v);
+    const playing = await new Promise<boolean>((resolve) => {
+      const t = setTimeout(() => resolve(false), 8000);
+      const done = (ok: boolean) => {
+        clearTimeout(t);
+        resolve(ok);
+      };
+      v.addEventListener('playing', () => done(true), { once: true });
+      v.addEventListener('error', () => done(false), { once: true });
+      v.play().catch(() => done(false));
+    });
+    if (!playing) {
+      row('媒体引擎开始播放', false, `error code=${v.error ? v.error.code : '无'}（4=源被拒绝/找不到，1=加载中断，2=网络问题，3=解码失败）`);
+    } else {
+      row('媒体引擎开始播放', true, `分辨率 ${v.videoWidth}x${v.videoHeight} @ ${v.currentTime.toFixed(2)}s`);
+      await new Promise((res) => setTimeout(res, 1500));
+      row('播放推进 >0.5s', v.currentTime > 0.5, `currentTime=${v.currentTime.toFixed(2)}s`);
+    }
+    v.pause();
+    v.removeAttribute('src');
+    v.load();
+    v.remove();
+  } catch (e) {
+    row('自测异常', false, String(e));
+  }
+  const fails = box.querySelectorAll('.selftest-row.fail').length;
+  const sum = document.createElement('div');
+  sum.className = 'selftest-sum ' + (fails ? 'fail' : 'ok');
+  sum.textContent = fails
+    ? `结论：❌ ${fails} 项未通过 —— 点下方「查看日志」把原生日志复制给开发者。`
+    : '结论：✅ 原生播放链路（scheme handler + 媒体引擎）全部正常。若 NAS 视频仍播不了，问题在网络源/账号，不是 App。';
+  box.appendChild(sum);
 }

@@ -620,6 +620,52 @@ body.player-open #app {
   margin: 8px 0 0;
 }
 
+/* ===== 播放自测 ===== */
+
+.selftest-box {
+  margin-top: 10px;
+}
+
+.selftest-row {
+  font-size: 13px;
+  line-height: 1.7;
+  padding: 6px 10px;
+  border-radius: 8px;
+  margin-top: 6px;
+  background: rgba(148, 163, 184, 0.08);
+  color: var(--fg-dim);
+  word-break: break-all;
+}
+
+.selftest-row.ok {
+  background: rgba(74, 222, 128, 0.12);
+  color: #4ade80;
+}
+
+.selftest-row.fail {
+  background: rgba(248, 113, 113, 0.12);
+  color: #f87171;
+}
+
+.selftest-sum {
+  margin-top: 10px;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.6;
+  padding: 8px 10px;
+  border-radius: 8px;
+}
+
+.selftest-sum.ok {
+  background: rgba(74, 222, 128, 0.12);
+  color: #4ade80;
+}
+
+.selftest-sum.fail {
+  background: rgba(248, 113, 113, 0.12);
+  color: #f87171;
+}
+
 /* ===== 底部标签栏 ===== */
 
 #tabbar {
