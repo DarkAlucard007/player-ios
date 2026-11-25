@@ -393,11 +393,11 @@ public class LocalMediaPlugin: CAPPlugin, CAPBridgedPlugin, WKURLSchemeHandler, 
             call.reject("bad orientation: \(o)")
             return
         }
-        Log.write("setOrientation \(o)")
+        Log.write("setOrientation \(o) → requestGeometryUpdate 已发出")
         if let scene = UIApplication.shared.connectedScenes.first as? UIWindowScene {
             if #available(iOS 16.0, *) {
-                scene.requestGeometryUpdate(.iOS(interfaceOrientations: mask)) { error in
-                    if let error { Log.write("requestGeometryUpdate 失败：\(error.localizedDescription)") }
+                scene.requestGeometryUpdate(.iOS(interfaceOrientations: mask)) { err in
+                    if let e = err as NSError? { Log.write("requestGeometryUpdate 回调：\(e.localizedDescription)") }
                 }
                 call.resolve(["ok": true])
                 return
