@@ -500,9 +500,9 @@ public class LocalMediaPlugin: CAPPlugin, CAPBridgedPlugin, WKURLSchemeHandler, 
         // TypeError: Load failed（真机自测第 2 步的失败原因之一）。
         if urlSchemeTask.request.httpMethod == "OPTIONS" {
             let pre = HTTPURLResponse(url: url, statusCode: 200, httpVersion: "HTTP/1.1", headerFields: Self.corsHeaders())!
-            urlSchemeTask.didReceive(response: pre)
-            urlSchemeTask.didSend(data: Data())
-            urlSchemeTask.didComplete()
+            urlSchemeTask.didReceive(pre)
+            urlSchemeTask.didReceive(Data())
+            urlSchemeTask.didFinish()
             return
         }
         // v1.1.17 修复：Foundation 的 URL.path 不会解码 %2F（只有 iOS 16+ 的
