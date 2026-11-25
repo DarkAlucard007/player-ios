@@ -140,7 +140,8 @@ export function renderSettings(el: HTMLElement): void {
 }
 
 /** 播放自测：内置样本 → Range 探测 → 全量读取 → <video> 真实解码播放。
- *  每一步都给出 ✓/✗ + 原始数据，失败时提示用户去查调试日志。 */
+ *  v1.1.19：每步独立 try/catch——中间步骤失败（如 fetch 被 CORS 预检拒绝）不再中止，
+ *  必须跑到媒体引擎那一步，那才是真结论。<video> 元素不做 CORS，与 fetch 是两条路。 */
 async function runSelfTest(el: HTMLElement): Promise<void> {
   const box = el.querySelector<HTMLElement>('#selftest-result')!;
   box.innerHTML = '<div class="selftest-row">正在自测…</div>';
@@ -150,61 +151,90 @@ async function runSelfTest(el: HTMLElement): Promise<void> {
     line.textContent = (ok ? '✓ ' : '✗ ') + label + '　' + detail;
     box.appendChild(line);
   };
+
+  // 1. 样本就绪（原生层把内置 sample.mp4 复制进媒体缓存目录）
+  let url: string | null = null;
+  let size = 0;
   try {
-    // 1. 样本就绪（原生层把内置 sample.mp4 复制进媒体缓存目录）
     const st = await selfTest();
-    const url = localUrl(st.name);
+    url = localUrl(st.name);
+    size = st.size;
     if (!url) throw new Error('localUrl 返回空');
     row('内置样本就绪', true, `${st.name} ${fmtSize(st.size)}`);
+  } catch (e) {
+    row('内置样本就绪', false, String(e));
+  }
+  if (!url) {
+    finishSummary(box, false, false);
+    return;
+  }
 
-    // 2. Range 探测（模拟媒体引擎的切片请求）
+  // 2. Range 探测（模拟媒体引擎的切片请求）。fetch 走 CORS，若被预检拒绝此步 ✗，
+  //    但不影响 <video> 元素——继续后续步骤。
+  try {
     const r = await fetch(url, { headers: { Range: 'bytes=0-99' } });
     const rb = await r.arrayBuffer();
     const cr = r.headers.get('content-range') || '（无）';
     row('Range 请求 206', r.status === 206 && rb.byteLength === 100, `status=${r.status} len=${rb.byteLength} content-range=${cr}`);
+  } catch (e) {
+    row('Range 请求 206', false, String(e) + '（fetch/CORS 被拒；媒体引擎结论看第 4 步）');
+  }
 
-    // 3. 全量读取
+  // 3. 全量读取
+  try {
     const f = await fetch(url);
     const fb = await f.arrayBuffer();
-    row('全量请求 200', f.status === 200 && fb.byteLength === st.size, `status=${f.status} len=${fb.byteLength}/${st.size}`);
-
-    // 4/5. 真实播放（媒体引擎解码 + 推进）
-    const v = document.createElement('video');
-    v.muted = true;
-    v.playsInline = true;
-    v.preload = 'auto';
-    v.src = url;
-    v.style.cssText = 'position:fixed;left:-9999px;top:0;width:160px;height:90px;';
-    document.body.appendChild(v);
-    const playing = await new Promise<boolean>((resolve) => {
-      const t = setTimeout(() => resolve(false), 8000);
-      const done = (ok: boolean) => {
-        clearTimeout(t);
-        resolve(ok);
-      };
-      v.addEventListener('playing', () => done(true), { once: true });
-      v.addEventListener('error', () => done(false), { once: true });
-      v.play().catch(() => done(false));
-    });
-    if (!playing) {
-      row('媒体引擎开始播放', false, `error code=${v.error ? v.error.code : '无'}（4=源被拒绝/找不到，1=加载中断，2=网络问题，3=解码失败）`);
-    } else {
-      row('媒体引擎开始播放', true, `分辨率 ${v.videoWidth}x${v.videoHeight} @ ${v.currentTime.toFixed(2)}s`);
-      await new Promise((res) => setTimeout(res, 1500));
-      row('播放推进 >0.5s', v.currentTime > 0.5, `currentTime=${v.currentTime.toFixed(2)}s`);
-    }
-    v.pause();
-    v.removeAttribute('src');
-    v.load();
-    v.remove();
+    row('全量请求 200', f.status === 200 && fb.byteLength === size, `status=${f.status} len=${fb.byteLength}/${size}`);
   } catch (e) {
-    row('自测异常', false, String(e));
+    row('全量请求 200', false, String(e));
   }
+
+  // 4/5. 真实播放（媒体引擎解码 + 推进）——最关键的步骤，必定执行
+  const v = document.createElement('video');
+  v.muted = true;
+  v.playsInline = true;
+  v.preload = 'auto';
+  v.src = url;
+  v.style.cssText = 'position:fixed;left:-9999px;top:0;width:160px;height:90px;';
+  document.body.appendChild(v);
+  const playing = await new Promise<boolean>((resolve) => {
+    const t = setTimeout(() => resolve(false), 10000);
+    const done = (ok: boolean) => {
+      clearTimeout(t);
+      resolve(ok);
+    };
+    v.addEventListener('playing', () => done(true), { once: true });
+    v.addEventListener('error', () => done(false), { once: true });
+    v.play().catch(() => done(false));
+  });
+  let advanced = false;
+  if (!playing) {
+    row('媒体引擎开始播放', false, `error code=${v.error ? v.error.code : '无'}（4=源被拒绝/找不到，1=加载中断，2=网络问题，3=解码失败）`);
+  } else {
+    row('媒体引擎开始播放', true, `分辨率 ${v.videoWidth}x${v.videoHeight} @ ${v.currentTime.toFixed(2)}s`);
+    await new Promise((res) => setTimeout(res, 1500));
+    advanced = v.currentTime > 0.5;
+    row('播放推进 >0.5s', advanced, `currentTime=${v.currentTime.toFixed(2)}s`);
+  }
+  v.pause();
+  v.removeAttribute('src');
+  v.load();
+  v.remove();
+
+  finishSummary(box, playing && advanced, false);
+}
+
+function finishSummary(box: HTMLElement, videoOK: boolean, _unused: boolean): void {
   const fails = box.querySelectorAll('.selftest-row.fail').length;
   const sum = document.createElement('div');
-  sum.className = 'selftest-sum ' + (fails ? 'fail' : 'ok');
-  sum.textContent = fails
-    ? `结论：❌ ${fails} 项未通过 —— 点下方「查看日志」把原生日志复制给开发者。`
-    : '结论：✅ 原生播放链路（scheme handler + 媒体引擎）全部正常。若 NAS 视频仍播不了，问题在网络源/账号，不是 App。';
+  if (videoOK) {
+    sum.className = 'selftest-sum ok';
+    sum.textContent = fails > 0
+      ? '结论：✅ 媒体引擎播放正常（fetch 探针失败只是 CORS 语义，不影响视频）。NAS 视频仍播不了请把完整日志发开发者。'
+      : '结论：✅ 原生播放链路（scheme handler + 媒体引擎）全部正常。若 NAS 视频仍播不了，问题在网络源/账号，不是 App。';
+  } else {
+    sum.className = 'selftest-sum fail';
+    sum.textContent = `结论：❌ 媒体引擎未播放成功（${fails} 项未通过）—— 点下方「查看日志」把完整原生日志复制给开发者（重点看「scheme 请求」行）。`;
+  }
   box.appendChild(sum);
 }

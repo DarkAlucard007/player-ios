@@ -494,7 +494,17 @@ public class LocalMediaPlugin: CAPPlugin, CAPBridgedPlugin, WKURLSchemeHandler, 
             return
         }
         let range = urlSchemeTask.request.value(forHTTPHeaderField: "Range") ?? "-"
-        Log.write("scheme 请求 \(url.path) range=\(range)")
+        Log.write("scheme 请求 \(url.path) range=\(range) method=\(urlSchemeTask.request.httpMethod ?? "GET")")
+        // v1.1.19：CORS 预检。带 Range 等"非简单头"的 fetch 会先发 OPTIONS 预检，
+        // 响应必须含 Access-Control-Allow-Origin + Allow-Headers，否则 fetch 直接
+        // TypeError: Load failed（真机自测第 2 步的失败原因之一）。
+        if urlSchemeTask.request.httpMethod == "OPTIONS" {
+            let pre = HTTPURLResponse(url: url, statusCode: 200, httpVersion: "HTTP/1.1", headerFields: Self.corsHeaders())!
+            urlSchemeTask.didReceive(response: pre)
+            urlSchemeTask.didSend(data: Data())
+            urlSchemeTask.didComplete()
+            return
+        }
         // v1.1.17 修复：Foundation 的 URL.path 不会解码 %2F（只有 iOS 16+ 的
         // path(percentEncoded: false) 才解）。browseSMB 返回的 URL 是单段
         // "smb%2F<文件名>"，不解码的话 hasPrefix("smb/") 永远 false → 落入
@@ -544,22 +554,20 @@ public class LocalMediaPlugin: CAPPlugin, CAPBridgedPlugin, WKURLSchemeHandler, 
 
         let rangeHeader = urlSchemeTask.request.value(forHTTPHeaderField: "Range")
         if fileSize > 0, let rangeHeader, let (start, end) = Self.parseRange(rangeHeader, total: fileSize) {
-            let response = HTTPURLResponse(url: url, statusCode: 206, httpVersion: "HTTP/1.1", headerFields: [
-                "Content-Type": mime,
-                "Content-Range": "bytes \(start)-\(end)/\(fileSize)",
-                "Accept-Ranges": "bytes",
-                "Content-Length": "\(end - start + 1)",
-                "Access-Control-Allow-Origin": "*"
-            ])!
+            var h = Self.corsHeaders()
+            h["Content-Type"] = mime
+            h["Content-Range"] = "bytes \(start)-\(end)/\(fileSize)"
+            h["Accept-Ranges"] = "bytes"
+            h["Content-Length"] = "\(end - start + 1)"
+            let response = HTTPURLResponse(url: url, statusCode: 206, httpVersion: "HTTP/1.1", headerFields: h)!
             urlSchemeTask.didReceive(response)
             stream(fileURL, from: start, length: end - start + 1, task: urlSchemeTask)
         } else if fileSize > 0 {
-            let response = HTTPURLResponse(url: url, statusCode: 200, httpVersion: "HTTP/1.1", headerFields: [
-                "Content-Type": mime,
-                "Accept-Ranges": "bytes",
-                "Content-Length": "\(fileSize)",
-                "Access-Control-Allow-Origin": "*"
-            ])!
+            var h = Self.corsHeaders()
+            h["Content-Type"] = mime
+            h["Accept-Ranges"] = "bytes"
+            h["Content-Length"] = "\(fileSize)"
+            let response = HTTPURLResponse(url: url, statusCode: 200, httpVersion: "HTTP/1.1", headerFields: h)!
             urlSchemeTask.didReceive(response)
             stream(fileURL, from: 0, length: fileSize, task: urlSchemeTask)
         } else {
@@ -568,15 +576,23 @@ public class LocalMediaPlugin: CAPPlugin, CAPBridgedPlugin, WKURLSchemeHandler, 
                 if let rangeHeader, let (s, _) = Self.parseRangeOpen(rangeHeader) { return s }
                 return 0
             }()
-            let headers: [String: String] = [
-                "Content-Type": mime,
-                "Accept-Ranges": "bytes",
-                "Access-Control-Allow-Origin": "*"
-            ]
-            let response = HTTPURLResponse(url: url, statusCode: 200, httpVersion: "HTTP/1.1", headerFields: headers)!
+            var h = Self.corsHeaders()
+            h["Content-Type"] = mime
+            h["Accept-Ranges"] = "bytes"
+            let response = HTTPURLResponse(url: url, statusCode: 200, httpVersion: "HTTP/1.1", headerFields: h)!
             urlSchemeTask.didReceive(response)
             stream(fileURL, from: start, length: -1, task: urlSchemeTask)
         }
+    }
+
+    /// v1.1.19：localmedia:// 响应的统一 CORS 头。页面源（file:// 或 capacitor://）与
+    /// localmedia:// 不同源，fetch/XHR 必走 CORS 检查；<video> 元素不做 CORS，
+    /// 但自测的 fetch 探针与预检需要这些头。
+    private static func corsHeaders() -> [String: String] {
+        ["Access-Control-Allow-Origin": "*",
+         "Access-Control-Allow-Methods": "GET, OPTIONS",
+         "Access-Control-Allow-Headers": "range, content-range",
+         "Access-Control-Expose-Headers": "content-range, content-length"]
     }
 
     /// WKURLSchemeTask 没有取消状态属性，用 ObjectIdentifier 集合自行跟踪
