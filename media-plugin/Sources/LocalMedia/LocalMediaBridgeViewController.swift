@@ -32,7 +32,7 @@ import Capacitor
 /// smbFiles/smbKinds 已改为 static 共享会话状态。
 public final class LocalMediaBridgeViewController: CAPBridgeViewController {
 
-    override public init?(coder: NSCoder) {
+    required public override init?(coder: NSCoder) {
         super.init(coder: coder)
         LocalMediaPlugin.Log.write("LocalMediaBridgeViewController init(coder): storyboard 已解析并实例化本类")
     }
