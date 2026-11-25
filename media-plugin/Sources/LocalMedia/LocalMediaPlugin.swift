@@ -34,7 +34,20 @@ public class LocalMediaPlugin: CAPPlugin, CAPBridgedPlugin, WKURLSchemeHandler, 
         CAPPluginMethod(name: "releaseSMBFile", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "readLog", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "clearLog", returnType: CAPPluginReturnPromise),
-        CAPPluginMethod(name: "selfTest", returnType: CAPPluginReturnPromise)
+        CAPPluginMethod(name: "selfTest", returnType: CAPPluginReturnPromise),
+        // v1.1.26：旋转 / 本地文件夹管理 / NAS 目录枚举与文件操作
+        CAPPluginMethod(name: "setOrientation", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "createFolder", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "renameItem", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "moveItem", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "copyItem", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "listSMBDir", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "createSMBFolder", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "renameSMBItem", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "moveSMBItem", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "copySMBItem", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "deleteSMBItem", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "openSMBFile", returnType: CAPPluginReturnPromise)
     ]
 
     // MARK: - 调试日志（同步写文件：闪退后日志依然存活，供 App 内查看/复制）
@@ -235,8 +248,43 @@ public class LocalMediaPlugin: CAPPlugin, CAPBridgedPlugin, WKURLSchemeHandler, 
         }
     }
 
+    /// v1.1.26：listFiles 支持 folder 参数（相对子目录路径，""=根目录）。
+    /// 返回 folders（子文件夹名列表）+ files（该层级的视频/字幕，不含更深目录）。
     @objc func listFiles(_ call: CAPPluginCall) {
-        call.resolve(["files": enumerateFiles()])
+        let folder = (call.options["folder"] as? String ?? "").trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        let dir = folder.isEmpty ? mediaDir : mediaDir.appendingPathComponent(folder)
+        let fm = FileManager.default
+        var folders: [String] = []
+        var files: [[String: Any]] = []
+        guard let entries = try? fm.contentsOfDirectory(
+            at: dir,
+            includingPropertiesForKeys: [.fileSizeKey, .contentModificationDateKey, .isDirectoryKey],
+            options: [.skipsHiddenFiles]
+        ) else {
+            call.resolve(["folders": [], "files": []])
+            return
+        }
+        for url in entries {
+            let isDir = (try? url.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory ?? false
+            if isDir {
+                folders.append(url.lastPathComponent)
+                continue
+            }
+            let ext = url.pathExtension.lowercased()
+            let isSubtitle = Self.subtitleExts.contains(ext)
+            let isVideo = Self.videoExts.contains(ext)
+            guard isVideo || isSubtitle else { continue }
+            let values = try? url.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey])
+            files.append([
+                "name": url.lastPathComponent,
+                "size": values?.fileSize ?? 0,
+                "kind": isSubtitle ? "subtitle" : "video",
+                "modifiedAt": (values?.contentModificationDate?.timeIntervalSince1970 ?? 0) * 1000
+            ])
+        }
+        folders.sort { $0.localizedStandardCompare($1) == .orderedAscending }
+        files.sort { ($0["modifiedAt"] as? Double ?? 0) > ($1["modifiedAt"] as? Double ?? 0) }
+        call.resolve(["folders": folders, "files": files])
     }
 
     @objc func deleteFile(_ call: CAPPluginCall) {
@@ -244,8 +292,302 @@ public class LocalMediaPlugin: CAPPlugin, CAPBridgedPlugin, WKURLSchemeHandler, 
             call.reject("missing name")
             return
         }
-        try? FileManager.default.removeItem(at: mediaDir.appendingPathComponent(name))
+        let folder = (call.options["folder"] as? String ?? "").trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        let target = folder.isEmpty ? mediaDir.appendingPathComponent(name) : mediaDir.appendingPathComponent(folder).appendingPathComponent(name)
+        try? FileManager.default.removeItem(at: target)
         call.resolve(["ok": true])
+    }
+
+    /// v1.1.26：在指定层级新建文件夹（folder 为父目录，""=根）
+    @objc func createFolder(_ call: CAPPluginCall) {
+        guard let name = call.options["name"] as? String, !name.isEmpty else {
+            call.reject("missing name")
+            return
+        }
+        let folder = (call.options["folder"] as? String ?? "").trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        let parent = folder.isEmpty ? mediaDir : mediaDir.appendingPathComponent(folder)
+        let dest = parent.appendingPathComponent(name, isDirectory: true)
+        do {
+            try FileManager.default.createDirectory(at: dest, withIntermediateDirectories: true)
+            call.resolve(["ok": true])
+        } catch {
+            call.reject("create folder failed: \(error.localizedDescription)")
+        }
+    }
+
+    /// v1.1.26：重命名文件夹或文件
+    @objc func renameItem(_ call: CAPPluginCall) {
+        guard let name = call.options["name"] as? String,
+              let newName = call.options["newName"] as? String, !newName.isEmpty else {
+            call.reject("missing name/newName")
+            return
+        }
+        let folder = (call.options["folder"] as? String ?? "").trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        let parent = folder.isEmpty ? mediaDir : mediaDir.appendingPathComponent(folder)
+        let src = parent.appendingPathComponent(name)
+        let dst = parent.appendingPathComponent(newName)
+        guard FileManager.default.fileExists(atPath: src.path) else {
+            call.reject("not found: \(name)")
+            return
+        }
+        do {
+            try FileManager.default.moveItem(at: src, to: dst)
+            call.resolve(["ok": true])
+        } catch {
+            call.reject("rename failed: \(error.localizedDescription)")
+        }
+    }
+
+    /// v1.1.26：移动文件或文件夹到 destFolder（""=根）
+    @objc func moveItem(_ call: CAPPluginCall) {
+        guard let name = call.options["name"] as? String else {
+            call.reject("missing name")
+            return
+        }
+        let folder = (call.options["folder"] as? String ?? "").trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        let destFolder = (call.options["destFolder"] as? String ?? "").trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        let src = folder.isEmpty ? mediaDir.appendingPathComponent(name) : mediaDir.appendingPathComponent(folder).appendingPathComponent(name)
+        let destParent = destFolder.isEmpty ? mediaDir : mediaDir.appendingPathComponent(destFolder)
+        try? FileManager.default.createDirectory(at: destParent, withIntermediateDirectories: true)
+        do {
+            try FileManager.default.moveItem(at: src, to: destParent.appendingPathComponent(name))
+            call.resolve(["ok": true])
+        } catch {
+            call.reject("move failed: \(error.localizedDescription)")
+        }
+    }
+
+    /// v1.1.26：复制文件到 destFolder（""=根）
+    @objc func copyItem(_ call: CAPPluginCall) {
+        guard let name = call.options["name"] as? String else {
+            call.reject("missing name")
+            return
+        }
+        let folder = (call.options["folder"] as? String ?? "").trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        let destFolder = (call.options["destFolder"] as? String ?? "").trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        let src = folder.isEmpty ? mediaDir.appendingPathComponent(name) : mediaDir.appendingPathComponent(folder).appendingPathComponent(name)
+        let destParent = destFolder.isEmpty ? mediaDir : mediaDir.appendingPathComponent(destFolder)
+        try? FileManager.default.createDirectory(at: destParent, withIntermediateDirectories: true)
+        do {
+            try FileManager.default.copyItem(at: src, to: destParent.appendingPathComponent(name))
+            call.resolve(["ok": true])
+        } catch {
+            call.reject("copy failed: \(error.localizedDescription)")
+        }
+    }
+
+    // MARK: - v1.1.26：屏幕旋转（自动横屏 + 手动 ⟲/⟳）
+
+    /// orientation: portrait | landscapeLeft | landscapeRight
+    @objc func setOrientation(_ call: CAPPluginCall) {
+        guard let o = call.options["orientation"] as? String else {
+            call.reject("missing orientation")
+            return
+        }
+        let mask: UIInterfaceOrientationMask
+        switch o {
+        case "portrait": mask = .portrait
+        case "landscapeLeft": mask = .landscapeLeft
+        case "landscapeRight": mask = .landscapeRight
+        default:
+            call.reject("bad orientation: \(o)")
+            return
+        }
+        Log.write("setOrientation \(o)")
+        if let scene = UIApplication.shared.connectedScenes.first as? UIWindowScene {
+            if #available(iOS 16.0, *) {
+                scene.requestGeometryUpdate(.iOS(interfaceOrientations: mask)) { error in
+                    if let error { Log.write("requestGeometryUpdate 失败：\(error.localizedDescription)") }
+                }
+                call.resolve(["ok": true])
+                return
+            }
+        }
+        // iOS 14/15 回退（私有 API，仅兜底）
+        let dev: UIDeviceOrientation
+        switch mask {
+        case .landscapeLeft: dev = .landscapeRight
+        case .landscapeRight: dev = .landscapeLeft
+        default: dev = .portrait
+        }
+        UIDevice.current.setValue(dev, forKey: "orientation")
+        call.resolve(["ok": true])
+    }
+
+    // MARK: - v1.1.26：NAS（SMB）目录枚举与文件操作
+    // 基于 FileManager 对 smb:// URL 的原生支持：只要「文件」App 已注册过该
+    // SMB 服务器（凭证由系统保管），App 就能直接枚举/创建/改名/移动/复制/删除。
+
+    private func smbBaseURL(host: String, port: String, share: String) -> URL? {
+        var h = host.trimmingCharacters(in: .whitespaces)
+        if !port.isEmpty && port != "445" { h += ":\(port)" }
+        guard let base = URL(string: "smb://\(h)/\(share)") else { return nil }
+        return base
+    }
+
+    /// 列出 NAS 目录：folders + files（视频/字幕，含大小）。path 为相对共享根的路径。
+    @objc func listSMBDir(_ call: CAPPluginCall) {
+        guard let host = call.options["host"] as? String, !host.isEmpty,
+              let share = call.options["share"] as? String, !share.isEmpty,
+              let base = smbBaseURL(host: host, port: (call.options["port"] as? String) ?? "", share: share) else {
+            call.reject("missing host/share")
+            return
+        }
+        let rel = (call.options["path"] as? String ?? "").trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        let dir = rel.isEmpty ? base : base.appendingPathComponent(rel)
+        Log.write("listSMBDir \(dir.absoluteString)")
+        let fm = FileManager.default
+        guard let entries = try? fm.contentsOfDirectory(at: dir, includingPropertiesForKeys: [.fileSizeKey, .isDirectoryKey], options: [.skipsHiddenFiles]) else {
+            call.reject("smb list failed（确认「文件」App 已注册该 NAS 且网络可达）")
+            return
+        }
+        var folders: [String] = []
+        var files: [[String: Any]] = []
+        for url in entries {
+            let isDir = (try? url.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory ?? false
+            if isDir {
+                folders.append(url.lastPathComponent)
+                continue
+            }
+            let ext = url.pathExtension.lowercased()
+            guard Self.videoExts.contains(ext) || Self.subtitleExts.contains(ext) else { continue }
+            let size = smbFileSize(url)
+            files.append([
+                "name": url.lastPathComponent,
+                "size": size,
+                "kind": Self.subtitleExts.contains(ext) ? "subtitle" : "video"
+            ])
+        }
+        folders.sort { $0.localizedStandardCompare($1) == .orderedAscending }
+        files.sort { ($0["name"] as? String ?? "") < ($1["name"] as? String ?? "") }
+        call.resolve(["folders": folders, "files": files])
+    }
+
+    @objc func createSMBFolder(_ call: CAPPluginCall) {
+        guard let host = call.options["host"] as? String, let share = call.options["share"] as? String,
+              let base = smbBaseURL(host: host, port: (call.options["port"] as? String) ?? "", share: share),
+              let name = call.options["name"] as? String, !name.isEmpty else {
+            call.reject("missing host/share/name")
+            return
+        }
+        let rel = (call.options["path"] as? String ?? "").trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        let parent = rel.isEmpty ? base : base.appendingPathComponent(rel)
+        do {
+            try FileManager.default.createDirectory(at: parent.appendingPathComponent(name, isDirectory: true), withIntermediateDirectories: true)
+            call.resolve(["ok": true])
+        } catch {
+            call.reject("create smb folder failed: \(error.localizedDescription)")
+        }
+    }
+
+    @objc func renameSMBItem(_ call: CAPPluginCall) {
+        guard let host = call.options["host"] as? String, let share = call.options["share"] as? String,
+              let base = smbBaseURL(host: host, port: (call.options["port"] as? String) ?? "", share: share),
+              let name = call.options["name"] as? String,
+              let newName = call.options["newName"] as? String, !newName.isEmpty else {
+            call.reject("missing host/share/name/newName")
+            return
+        }
+        let rel = (call.options["path"] as? String ?? "").trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        let parent = rel.isEmpty ? base : base.appendingPathComponent(rel)
+        do {
+            try FileManager.default.moveItem(at: parent.appendingPathComponent(name), to: parent.appendingPathComponent(newName))
+            call.resolve(["ok": true])
+        } catch {
+            call.reject("rename smb item failed: \(error.localizedDescription)")
+        }
+    }
+
+    @objc func moveSMBItem(_ call: CAPPluginCall) {
+        guard let host = call.options["host"] as? String, let share = call.options["share"] as? String,
+              let base = smbBaseURL(host: host, port: (call.options["port"] as? String) ?? "", share: share),
+              let name = call.options["name"] as? String else {
+            call.reject("missing host/share/name")
+            return
+        }
+        let rel = (call.options["path"] as? String ?? "").trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        let destRel = (call.options["destPath"] as? String ?? "").trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        let src = (rel.isEmpty ? base : base.appendingPathComponent(rel)).appendingPathComponent(name)
+        let dstParent = destRel.isEmpty ? base : base.appendingPathComponent(destRel)
+        do {
+            try FileManager.default.moveItem(at: src, to: dstParent.appendingPathComponent(name))
+            call.resolve(["ok": true])
+        } catch {
+            call.reject("move smb item failed: \(error.localizedDescription)")
+        }
+    }
+
+    @objc func copySMBItem(_ call: CAPPluginCall) {
+        guard let host = call.options["host"] as? String, let share = call.options["share"] as? String,
+              let base = smbBaseURL(host: host, port: (call.options["port"] as? String) ?? "", share: share),
+              let name = call.options["name"] as? String else {
+            call.reject("missing host/share/name")
+            return
+        }
+        let rel = (call.options["path"] as? String ?? "").trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        let destRel = (call.options["destPath"] as? String ?? "").trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        let src = (rel.isEmpty ? base : base.appendingPathComponent(rel)).appendingPathComponent(name)
+        let dstParent = destRel.isEmpty ? base : base.appendingPathComponent(destRel)
+        do {
+            try FileManager.default.copyItem(at: src, to: dstParent.appendingPathComponent(name))
+            call.resolve(["ok": true])
+        } catch {
+            call.reject("copy smb item failed: \(error.localizedDescription)")
+        }
+    }
+
+    @objc func deleteSMBItem(_ call: CAPPluginCall) {
+        guard let host = call.options["host"] as? String, let share = call.options["share"] as? String,
+              let base = smbBaseURL(host: host, port: (call.options["port"] as? String) ?? "", share: share),
+              let name = call.options["name"] as? String else {
+            call.reject("missing host/share/name")
+            return
+        }
+        let rel = (call.options["path"] as? String ?? "").trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        let target = (rel.isEmpty ? base : base.appendingPathComponent(rel)).appendingPathComponent(name)
+        do {
+            try FileManager.default.removeItem(at: target)
+            call.resolve(["ok": true])
+        } catch {
+            call.reject("delete smb item failed: \(error.localizedDescription)")
+        }
+    }
+
+    /// v1.1.26：从 NAS 目录直接打开视频——尝试对 smb:// URL 做安全作用域登记
+    /// （「文件」App 已注册凭证时通常成功），登记进 SMB 会话表后返回 localmedia URL。
+    /// 失败时返回 error，前端回退到系统选择器流程。
+    @objc func openSMBFile(_ call: CAPPluginCall) {
+        guard let host = call.options["host"] as? String, let share = call.options["share"] as? String,
+              let base = smbBaseURL(host: host, port: (call.options["port"] as? String) ?? "", share: share),
+              let name = call.options["name"] as? String else {
+            call.reject("missing host/share/name")
+            return
+        }
+        let rel = (call.options["path"] as? String ?? "").trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        let fileURL = (rel.isEmpty ? base : base.appendingPathComponent(rel)).appendingPathComponent(name)
+        Log.write("openSMBFile \(fileURL.absoluteString)")
+        let key = (rel.isEmpty ? "" : rel + "/") + name
+        if Self.smbFiles[key] != nil {
+            let size = Self.smbSizes[key] ?? 0
+            call.resolve(["name": key, "size": size, "url": "localmedia:///smb%2F\(key.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? key)"])
+            return
+        }
+        let ok = fileURL.startAccessingSecurityScopedResource()
+        guard ok else {
+            call.reject("smb scope access denied（改用系统选择器选一次即可）")
+            return
+        }
+        Self.smbFiles[key] = fileURL
+        let size = smbFileSize(fileURL)
+        Self.smbSizes[key] = size
+        let ext = fileURL.pathExtension.lowercased()
+        Self.smbKinds[key] = Self.subtitleExts.contains(ext) ? "subtitle" : "video"
+        Log.write("openSMBFile 登记 \(key)（\(size) bytes）")
+        call.resolve([
+            "name": key,
+            "size": size,
+            "url": "localmedia:///smb%2F\(key.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? key)"
+        ])
     }
 
     @objc func clearCache(_ call: CAPPluginCall) {

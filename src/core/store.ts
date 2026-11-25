@@ -24,6 +24,7 @@ function defaultState(): AppState {
     sources: [],
     playlists: [],
     records: {},
+    favorites: [],
     settings: { ...DEFAULT_SETTINGS, subtitleStyle: { ...DEFAULT_SETTINGS.subtitleStyle } }
   };
 }
@@ -37,6 +38,7 @@ function load(): AppState {
     // 兜底补齐缺省字段
     parsed.settings = { ...DEFAULT_SETTINGS, ...parsed.settings };
     parsed.settings.subtitleStyle = { ...DEFAULT_SETTINGS.subtitleStyle, ...parsed.settings.subtitleStyle };
+    parsed.favorites = Array.isArray(parsed.favorites) ? parsed.favorites : [];
     return parsed;
   } catch {
     return defaultState();
@@ -72,10 +74,11 @@ export function notify(): void {
 
 // ---- 本地媒体库 ----
 
-export function addLocalFiles(files: Array<{ name: string; size: number; kind: 'video' | 'subtitle'; modifiedAt?: number }>): void {
+export function addLocalFiles(files: Array<{ name: string; size: number; kind: 'video' | 'subtitle'; modifiedAt?: number; folder?: string }>): void {
   const now = Date.now();
   for (const f of files) {
-    const exists = state.library.find((x) => x.name === f.name);
+    const folder = f.folder ?? '';
+    const exists = state.library.find((x) => x.name === f.name && (x.folder ?? '') === folder);
     if (exists) {
       exists.size = f.size;
       exists.kind = f.kind;
@@ -86,18 +89,22 @@ export function addLocalFiles(files: Array<{ name: string; size: number; kind: '
         size: f.size,
         kind: f.kind,
         addedAt: now,
-        modifiedAt: f.modifiedAt ?? now
+        modifiedAt: f.modifiedAt ?? now,
+        folder
       });
     }
   }
   notify();
 }
 
-export function removeLocalFile(name: string): void {
-  state.library = state.library.filter((f) => f.name !== name);
+export function removeLocalFile(name: string, folder = ''): void {
+  state.library = state.library.filter((f) => !(f.name === name && (f.folder ?? '') === folder));
+  const key = folder ? 'local:' + folder + '/' + name : 'local:' + name;
+  delete state.records[key];
   delete state.records['local:' + name];
+  state.favorites = state.favorites.filter((k) => k !== key && k !== 'local:' + name);
   for (const pl of state.playlists) {
-    pl.items = pl.items.filter((k) => k !== 'local:' + name);
+    pl.items = pl.items.filter((k) => k !== key && k !== 'local:' + name);
   }
   notify();
 }
@@ -179,6 +186,29 @@ export function setSettings(patch: Partial<Settings>): void {
   Object.assign(state.settings, patch);
   if (patch.subtitleStyle) {
     state.settings.subtitleStyle = { ...state.settings.subtitleStyle, ...patch.subtitleStyle };
+  }
+  notify();
+}
+
+// ---- v1.1.26：收藏 ----
+
+export function isFavorite(key: string): boolean {
+  return state.favorites.includes(key);
+}
+
+export function toggleFavorite(key: string): void {
+  if (state.favorites.includes(key)) state.favorites = state.favorites.filter((k) => k !== key);
+  else state.favorites.push(key);
+  notify();
+}
+
+/** 批量收藏/取消收藏（多选操作条的 ★ 按钮）。favorite=true 全部加入收藏，false 全部移除。 */
+export function setFavoritesMany(keys: string[], favorite: boolean): void {
+  if (favorite) {
+    for (const k of keys) if (!state.favorites.includes(k)) state.favorites.push(k);
+  } else {
+    const drop = new Set(keys);
+    state.favorites = state.favorites.filter((k) => !drop.has(k));
   }
   notify();
 }

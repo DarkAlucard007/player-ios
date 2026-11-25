@@ -11,6 +11,8 @@ export interface LocalFile {
   kind: MediaKind;
   addedAt: number;
   modifiedAt: number;
+  /** v1.1.26：所在文件夹（相对媒体库根的路径，""=根目录） */
+  folder?: string;
 }
 
 /** 媒体库条目（本地 / WebDAV / Emby 统一模型） */
@@ -79,4 +81,6 @@ export interface AppState {
   playlists: Playlist[];
   records: Record<string, PlaybackRecord>;
   settings: Settings;
+  /** v1.1.26：收藏（媒体 key：local:<folder>/<name> 或 smb:<host>/<share>/<path>/<name>） */
+  favorites: string[];
 }

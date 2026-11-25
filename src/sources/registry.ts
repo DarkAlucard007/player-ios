@@ -47,15 +47,20 @@ export interface ResolvedPlayback {
   smbName?: string | null;
 }
 
-/** 把 media key 解析成播放地址 */
+/** 把 media key 解析成播放地址。
+ *  v1.1.26：local key 可带文件夹，形如 local:<folder>/<name>（folder 可含多级）。 */
 export function resolvePlayback(key: string): ResolvedPlayback | null {
   if (key.startsWith('local:')) {
-    const name = key.slice(6);
-    const file = state.library.find((f) => f.name === name && f.kind === 'video');
+    const rest = key.slice(6);
+    const slash = rest.lastIndexOf('/');
+    const folder = slash >= 0 ? rest.slice(0, slash) : '';
+    const name = slash >= 0 ? rest.slice(slash + 1) : rest;
+    const rel = folder ? folder + '/' + name : name;
+    const file = state.library.find((f) => f.name === name && (f.folder ?? '') === folder && f.kind === 'video');
     if (!file) return null;
-    const url = localUrl(name);
+    const url = localUrl(rel);
     if (!url) return null;
-    return { url, title: name, localName: name };
+    return { url, title: name, localName: rel };
   }
   if (key.startsWith('webdav:')) {
     const rest = key.slice(7);
@@ -92,13 +97,17 @@ export function resolvePlayback(key: string): ResolvedPlayback | null {
   return null;
 }
 
-/** 本地媒体自动匹配同名外挂字幕（local:<base>.srt 等） */
+/** 本地媒体自动匹配同名外挂字幕（同文件夹、同名 .srt/.ass/.ssa/.sub）。
+ *  v1.1.26：localName 可带文件夹前缀。 */
 export function findMatchingSubtitle(localName: string): string | null {
-  const base = localName.slice(0, localName.lastIndexOf('.'));
+  const slash = localName.lastIndexOf('/');
+  const folder = slash >= 0 ? localName.slice(0, slash) : '';
+  const name = slash >= 0 ? localName.slice(slash + 1) : localName;
+  const base = name.slice(0, name.lastIndexOf('.'));
   const subs = ['srt', 'ass', 'ssa', 'sub'];
   for (const ext of subs) {
-    const hit = state.library.find((f) => f.kind === 'subtitle' && f.name === `${base}.${ext}`);
-    if (hit) return hit.name;
+    const hit = state.library.find((f) => f.kind === 'subtitle' && (f.folder ?? '') === folder && f.name === `${base}.${ext}`);
+    if (hit) return folder ? folder + '/' + hit.name : hit.name;
   }
   return null;
 }

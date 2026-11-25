@@ -3,7 +3,7 @@
 import { state, createPlaylist, removePlaylist, removeFromPlaylist } from '../core/store';
 import { openPlayer } from '../player/player';
 import { promptDialog, confirmDialog, toast } from '../components/ui';
-import { escapeHtml, titleOfKey } from '../core/util';
+import { escapeHtml, titleOfKey, fmtTime } from '../core/util';
 
 let openPlaylistId: string | null = null;
 
@@ -102,9 +102,14 @@ function renderPlaylistDetail(body: HTMLElement, pl: import('../core/types').Pla
   pl.items.forEach((key, i) => {
     const row = document.createElement('div');
     row.className = 'media-row';
+    const rec = state.records[key];
+    const pct = rec && rec.duration > 0 ? Math.min(100, Math.round((rec.time / rec.duration) * 100)) : 0;
     row.innerHTML = `
+      <div class="pl-idx">${i + 1}</div>
+      <span class="donut${pct >= 97 ? ' full' : ''}" style="--p:${pct}"></span>
       <div class="media-row-main">
-        <div class="media-row-title">${i + 1}. ${escapeHtml(titleOfKey(key))}</div>
+        <div class="media-row-title">${escapeHtml(titleOfKey(key))}</div>
+        <div class="media-row-sub">${rec && rec.duration > 0 ? fmtTime(rec.time) + ' / ' + fmtTime(rec.duration) : '未观看'}</div>
       </div>
       <button class="media-row-del" aria-label="移除">×</button>
     `;

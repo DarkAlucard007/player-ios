@@ -1,8 +1,8 @@
 // 播放器主界面：全屏播放 + 控制层 + 字幕叠加 + 倍速/PiP/投屏/截图/EQ/色彩 + 自动连播
 
 import { state, saveRecord, setSettings, addToPlaylist } from '../core/store';
-import { fmtTime, escapeHtml, extOf } from '../core/util';
-import { captureFrame, saveImageToPhotos, pickMedia, readTextFile, localUrl, releaseSMBFile } from '../native/localMedia';
+import { fmtTime, escapeHtml, extOf, titleOfKey } from '../core/util';
+import { captureFrame, saveImageToPhotos, pickMedia, readTextFile, localUrl, setOrientation, listSMBDir, type ScreenOrientation } from '../native/localMedia';
 import { parseSubtitle, cueAt, type Cue } from './subtitles';
 import { EQ, EQ_BAND_LABELS } from './eq';
 import { resolvePlayback, findMatchingSubtitle } from '../sources/registry';
@@ -24,6 +24,10 @@ interface PlayerSession {
   saveTimer: number | null;
   raf: number;
   closed: boolean;
+  /** v1.1.26：当前屏幕方向（手动 ⟲/⟳ 循环用） */
+  orient: ScreenOrientation;
+  /** v1.1.26：横屏视频已自动切横屏（关闭时恢复竖屏） */
+  autoLandscape: boolean;
 }
 
 let session: PlayerSession | null = null;
@@ -51,9 +55,7 @@ export function openPlayer(key: string, context?: string[]): void {
       <div class="pv-title" id="pv-title"></div>
     </div>
     <div class="pv-center" id="pv-center">
-      <button class="pv-btn pv-skip" id="pv-rew">-10s</button>
       <button class="pv-btn pv-big" id="pv-play">▶</button>
-      <button class="pv-btn pv-skip" id="pv-fwd">+10s</button>
     </div>
     <div class="pv-bottom" id="pv-bottom">
       <div class="pv-seek-row">
@@ -65,16 +67,22 @@ export function openPlayer(key: string, context?: string[]): void {
         <span class="pv-time" id="pv-dur">00:00</span>
       </div>
       <div class="pv-btns">
+        <button class="pv-btn" id="pv-rot-l" aria-label="左旋">⟲</button>
+        <button class="pv-btn" id="pv-rot-r" aria-label="右旋">⟳</button>
+        <button class="pv-btn pv-skip" id="pv-rew">-10s</button>
+        <button class="pv-btn pv-skip" id="pv-fwd2">+10s</button>
         <button class="pv-btn" id="pv-speed">1.0x</button>
         <button class="pv-btn pv-cc" id="pv-cc">CC</button>
+        <button class="pv-btn" id="pv-list">☰列表</button>
         <button class="pv-btn" id="pv-shot">截图</button>
-        <button class="pv-btn" id="pv-pip">PiP</button>
         <button class="pv-btn" id="pv-airplay">投屏</button>
         <button class="pv-btn" id="pv-more">更多</button>
       </div>
     </div>
     <div class="pv-sheet-mask" id="pv-sheet-mask"></div>
     <div class="pv-sheet" id="pv-sheet"></div>
+    <div class="pv-panel-mask" id="pv-panel-mask"></div>
+    <div class="pv-panel" id="pv-panel"></div>
   `;
   document.body.appendChild(root);
   document.body.classList.add('player-open');
@@ -93,7 +101,9 @@ export function openPlayer(key: string, context?: string[]): void {
     hideTimer: null,
     saveTimer: null,
     raf: 0,
-    closed: false
+    closed: false,
+    orient: 'portrait',
+    autoLandscape: false
   };
   session = s;
 
@@ -110,6 +120,15 @@ export function openPlayer(key: string, context?: string[]): void {
       video.currentTime = Math.min(rec.time, Math.max(0, video.duration - 2));
     }, { once: true });
   }
+
+  // v1.1.26：横屏视频自动切横屏（元数据拿到宽高后判断，宽>高即横屏）
+  video.addEventListener('loadedmetadata', () => {
+    if (video.videoWidth > video.videoHeight) {
+      s.orient = 'landscapeLeft';
+      s.autoLandscape = true;
+      void setOrientation('landscapeLeft');
+    }
+  }, { once: true });
 
   // 本地视频自动匹配外挂字幕
   if (resolved.localName) {
@@ -142,8 +161,10 @@ function teardown(): void {
   if (s.saveTimer) window.clearInterval(s.saveTimer);
   cancelAnimationFrame(s.raf);
   if (s.eqOn) s.eq.detach();
-  // 释放 SMB 安全作用域访问
-  if (s.key.startsWith('smb:')) void releaseSMBFile(s.key.slice(4));
+  // v1.1.26：不再释放 SMB 安全作用域——播放列表重播 / 连播需要会话存活，
+  // 旧代码退出即 releaseSMBFile → 列表里再点同一视频 code=4（用户反馈的根因）。
+  // 会话在 App 退出时由系统统一回收；用户显式删除时才 release。
+  if (s.autoLandscape) void setOrientation('portrait');
   const video = root?.querySelector<HTMLVideoElement>('#pv');
   if (video) {
     video.pause();
@@ -176,17 +197,14 @@ function bindPlayerEvents(video: HTMLVideoElement, s: PlayerSession): void {
     video.currentTime = Math.max(0, video.currentTime - 10);
     poke(s);
   });
-  r.querySelector('#pv-fwd')!.addEventListener('click', () => {
+  r.querySelector('#pv-fwd2')!.addEventListener('click', () => {
     video.currentTime = Math.min(video.duration || 0, video.currentTime + 10);
     poke(s);
   });
 
-  // 点画面 = 播放/暂停 + 控制层显隐
-  video.addEventListener('click', () => {
-    if (video.paused) void video.play();
-    else video.pause();
-    poke(s);
-  });
+  // v1.1.26：点画面 = 仅切换控制层显隐，不再暂停/播放（旧逻辑点一下就暂停，被用户判为错误）。
+  // 播放/暂停只由中间大按钮与底部控制层触发。
+  video.addEventListener('click', () => toggleControls(s));
 
   video.addEventListener('play', () => {
     playBtn.textContent = '❚❚';
@@ -261,26 +279,7 @@ function bindPlayerEvents(video: HTMLVideoElement, s: PlayerSession): void {
     void doScreenshot(video, s);
   });
 
-  // 画中画
-  r.querySelector('#pv-pip')!.addEventListener('click', async () => {
-    try {
-      const v = video as HTMLVideoElement & {
-        requestPictureInPicture?: () => Promise<unknown>;
-        exitPictureInPicture?: () => Promise<void>;
-        documentPictureInPicture?: unknown;
-      };
-      if (document.pictureInPictureElement) {
-        await v.exitPictureInPicture?.();
-      } else if (v.requestPictureInPicture) {
-        await v.requestPictureInPicture();
-      } else {
-        toast('当前系统不支持画中画');
-      }
-    } catch {
-      toast('画中画启动失败');
-    }
-    poke(s);
-  });
+  // v1.1.26：移除画中画按钮——WKWebView 无 PiP JS API，该按钮在真机上一直是死的。
 
   // 投屏：切换系统控件（WKWebView 的 AirPlay 只在系统控件里可用）
   r.querySelector('#pv-airplay')!.addEventListener('click', () => {
@@ -293,6 +292,17 @@ function bindPlayerEvents(video: HTMLVideoElement, s: PlayerSession): void {
     }
     poke(s);
   });
+
+  // v1.1.26：手动旋转 ⟲ / ⟳
+  r.querySelector('#pv-rot-l')!.addEventListener('click', () => rotateScreen(s, 'left'));
+  r.querySelector('#pv-rot-r')!.addEventListener('click', () => rotateScreen(s, 'right'));
+
+  // v1.1.26：☰列表 → 播放列表面板
+  r.querySelector('#pv-list')!.addEventListener('click', () => {
+    renderPanel(s);
+    poke(s);
+  });
+  r.querySelector('#pv-panel-mask')!.addEventListener('click', () => closePanel());
 
   // 更多面板
   r.querySelector('#pv-more')!.addEventListener('click', () => {
@@ -323,6 +333,32 @@ function scheduleHide(s: PlayerSession): void {
   poke(s);
 }
 
+/** v1.1.26：点按切换控制层——隐藏时不启动自动隐藏计时，显示时启动。 */
+function toggleControls(s: PlayerSession): void {
+  const r = root;
+  if (!r) return;
+  if (r.classList.contains('pv-hidden')) {
+    poke(s); // 显示 + 3.5s 后自动隐藏
+  } else {
+    r.classList.add('pv-hidden');
+    if (s.hideTimer) {
+      window.clearTimeout(s.hideTimer);
+      s.hideTimer = null;
+    }
+  }
+}
+
+/** v1.1.26：手动旋转 ⟲/⟳，在 portrait→landscapeLeft→landscapeRight 间循环，可反复点。 */
+function rotateScreen(s: PlayerSession, dir: 'left' | 'right'): void {
+  const cycle: ScreenOrientation[] = ['portrait', 'landscapeLeft', 'landscapeRight'];
+  const i = cycle.indexOf(s.orient);
+  const next = dir === 'right' ? cycle[(i + 1) % cycle.length] : cycle[(i - 1 + cycle.length) % cycle.length];
+  s.orient = next;
+  s.autoLandscape = false; // 手动旋转后不再自动恢复
+  void setOrientation(next);
+  poke(s);
+}
+
 // ---- 连播 ----
 
 function loadNext(s: PlayerSession): void {
@@ -330,7 +366,7 @@ function loadNext(s: PlayerSession): void {
   const resolved = resolvePlayback(nextKey);
   if (!resolved) return;
   const video = root!.querySelector<HTMLVideoElement>('#pv')!;
-  if (s.key.startsWith('smb:')) void releaseSMBFile(s.key.slice(4));
+  // v1.1.26：连播不再释放前一个 SMB 会话（释放会导致下一个/重播 code=4）
   s.key = nextKey;
   s.index++;
   s.cues = [];
@@ -661,4 +697,101 @@ function renderSheet(video: HTMLVideoElement, s: PlayerSession): void {
 
 function closeSheet(): void {
   root?.classList.remove('pv-sheet-open');
+}
+
+// ---- v1.1.26：☰列表面板（正在播放高亮；空列表时回退到当前文件所在层级的全部视频） ----
+
+async function renderPanel(s: PlayerSession): Promise<void> {
+  const panel = root!.querySelector('#pv-panel')!;
+  panel.innerHTML = '<div class="loading">加载中…</div>';
+  root!.classList.add('pv-panel-open');
+
+  let title = '当前列表';
+  let items: string[] = [];
+  if (s.context.length > 1) {
+    title = '连播列表';
+    items = s.context;
+  } else if (s.key.startsWith('local:')) {
+    const rest = s.key.slice(6);
+    const slash = rest.lastIndexOf('/');
+    const folder = slash >= 0 ? rest.slice(0, slash) : '';
+    title = folder ? '本文件夹 · ' + folder : '本文件夹 · 根目录';
+    items = state.library
+      .filter((f) => f.kind === 'video' && (f.folder ?? '') === folder)
+      .map((f) => 'local:' + (folder ? folder + '/' : '') + f.name);
+  } else if (s.key.startsWith('smb:')) {
+    const rel = s.key.slice(4);
+    const slash = rel.lastIndexOf('/');
+    const parent = slash >= 0 ? rel.slice(0, slash) : '';
+    title = '本文件夹 · NAS ' + (parent || '共享根');
+    const src = state.sources.find((x) => x.type === 'smb');
+    if (src) {
+      try {
+        const dir = await listSMBDir({ host: src.host, port: src.port, share: src.share ?? '', path: parent });
+        items = dir.files.filter((f) => f.kind === 'video').map((f) => 'smb:' + (parent ? parent + '/' : '') + f.name);
+      } catch {
+        items = [s.key];
+      }
+    } else {
+      items = [s.key];
+    }
+  } else {
+    items = [s.key];
+  }
+
+  if (items.length === 0) items = [s.key];
+  panel.innerHTML = `
+    <div class="pv-panel-head">
+      <span>${escapeHtml(title)}</span>
+      <button class="pv-btn" id="pv-panel-close">完成</button>
+    </div>
+    <div class="pv-panel-body">
+      ${items
+        .map(
+          (k, i) => `
+        <div class="pv-pl-row ${k === s.key ? 'on' : ''}" data-pk="${escapeHtml(k)}">
+          <span class="pv-pl-idx">${i + 1}</span>
+          <span class="pv-pl-name">${escapeHtml(titleOfKey(k))}</span>
+          ${k === s.key ? '<span class="pv-pl-now">播放中</span>' : ''}
+        </div>`
+        )
+        .join('')}
+    </div>
+  `;
+  panel.querySelector('#pv-panel-close')!.addEventListener('click', closePanel);
+  panel.querySelectorAll('.pv-pl-row').forEach((rowEl) => {
+    rowEl.addEventListener('click', () => {
+      const k = (rowEl as HTMLElement).dataset.pk || '';
+      if (!k || k === s.key) return;
+      playFromList(s, items, k);
+    });
+  });
+}
+
+function closePanel(): void {
+  root?.classList.remove('pv-panel-open');
+}
+
+/** 面板里点选某条：以 items 为连播顺序跳到该项 */
+function playFromList(s: PlayerSession, items: string[], key: string): void {
+  const resolved = resolvePlayback(key);
+  if (!resolved) {
+    toast('无法解析播放地址');
+    return;
+  }
+  const video = root!.querySelector<HTMLVideoElement>('#pv')!;
+  s.context = items;
+  s.index = Math.max(0, items.indexOf(key));
+  s.key = key;
+  s.cues = [];
+  s.subtitleName = null;
+  root!.querySelector('#pv-title')!.textContent = resolved.title;
+  video.src = resolved.url;
+  if (resolved.localName) {
+    const subName = findMatchingSubtitle(resolved.localName);
+    if (subName) void loadSubtitleFile(resolved.localName, subName, s);
+  }
+  closePanel();
+  void video.play().catch(() => undefined);
+  toast('已切换：' + resolved.title);
 }

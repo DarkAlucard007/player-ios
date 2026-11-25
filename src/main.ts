@@ -9,6 +9,7 @@ import { renderBrowse } from './views/browse';
 import { renderSearch } from './views/search';
 import { renderPlaylists } from './views/playlists';
 import { renderSettings } from './views/settings';
+import { renderSourceAdd, renderSourceEdit } from './views/sources';
 
 registerRoute('home', (el) => renderHome(el));
 registerRoute('library', (el) => renderLibrary(el));
@@ -16,6 +17,11 @@ registerRoute('browse', (el, hash) => renderBrowse(el, hash));
 registerRoute('search', (el) => renderSearch(el));
 registerRoute('playlists', (el) => renderPlaylists(el));
 registerRoute('settings', (el) => renderSettings(el));
+registerRoute('source-add', (el) => renderSourceAdd(el));
+registerRoute('source-edit', (el, hash) => {
+  const id = new URLSearchParams(hash.split('?')[1] || '').get('id') || '';
+  renderSourceEdit(el, id);
+});
 
 // 播放器是全屏覆盖层，不走标签栏
 registerRoute('player', (el, hash) => {

@@ -1,125 +1,140 @@
-// 首页：继续观看 + 最近添加 + 快捷操作 + 媒体源列表
+// 首页（v1.1.26 设计稿 V4）：媒体源（+添加/浏览/配置）→ 最近添加 → 继续观看 → 收藏
 
-import { state } from '../core/store';
-import { mediaCard } from '../components/media';
+import { state, isFavorite } from '../core/store';
 import { openPlayer } from '../player/player';
 import { nav } from '../router';
+import { escapeHtml, titleOfKey, fmtTime, fmtSize } from '../core/util';
 
 export function renderHome(el: HTMLElement): void {
   el.innerHTML = `
-    <div class="page-head">
-      <h1>视频播放器<span class="app-ver">v${__APP_VERSION__}</span></h1>
-      <div class="page-actions">
-        <button class="app-btn" id="home-add-src">+ 媒体源</button>
+    <div class="page">
+      <div class="page-head">
+        <h1>视频播放器<span class="app-ver">v${__APP_VERSION__}</span></h1>
       </div>
+      <div id="home-body"></div>
     </div>
-    <div id="home-body"></div>
   `;
-  el.querySelector('#home-add-src')!.addEventListener('click', () => nav('#/browse?add=1'));
   renderBody(el.querySelector('#home-body')!);
 }
 
 export function renderBody(body: HTMLElement): void {
   body.innerHTML = '';
 
-  // 继续观看
-  const records = Object.entries(state.records)
-    .filter(([key, rec]) => rec.duration > 0 && rec.time / rec.duration > 0.01 && rec.time / rec.duration < 0.97)
-    .sort((a, b) => b[1].updatedAt - a[1].updatedAt)
-    .slice(0, 12);
-  if (records.length > 0) {
-    body.appendChild(section('继续观看'));
-    const grid = document.createElement('div');
-    grid.className = 'media-grid';
-    for (const [key] of records) {
-      grid.appendChild(mediaCard(key, titleFor(key), progressText(key)));
-    }
-    body.appendChild(grid);
+  // 1. 媒体源（+ 添加，每个源：浏览 / 配置）
+  body.appendChild(section('媒体源', () => nav('#/source-add')));
+  if (state.sources.length === 0) {
+    const tip = document.createElement('div');
+    tip.className = 'loading';
+    tip.textContent = '还没有媒体源，点上方「+ 添加」';
+    body.appendChild(tip);
   }
+  const srcList = document.createElement('div');
+  srcList.className = 'src-list';
+  for (const s of state.sources) {
+    const icon = s.type === 'webdav' ? '🗂' : s.type === 'smb' ? '📡' : '🎬';
+    const sub =
+      s.type === 'smb'
+        ? escapeHtml(s.host + (s.port && s.port !== '445' ? ':' + s.port : '') + '/' + (s.share || ''))
+        : escapeHtml(s.host);
+    const row = document.createElement('div');
+    row.className = 'src-row';
+    row.innerHTML = `
+      <span class="src-icon">${icon}</span>
+      <div class="src-main">
+        <div class="src-name">${escapeHtml(s.name)}</div>
+        <div class="src-host">${sub}</div>
+      </div>
+      <div class="src-acts">
+        <button class="src-act browse">浏览</button>
+        <button class="src-act">配置</button>
+      </div>
+    `;
+    row.querySelector('.src-act.browse')!.addEventListener('click', (e) => {
+      e.stopPropagation();
+      nav('#/browse?src=' + s.id);
+    });
+    row.querySelectorAll<HTMLElement>('.src-act')[1].addEventListener('click', (e) => {
+      e.stopPropagation();
+      nav('#/source-edit?id=' + s.id);
+    });
+    row.addEventListener('click', () => nav('#/browse?src=' + s.id));
+    srcList.appendChild(row);
+  }
+  body.appendChild(srcList);
 
-  // 最近添加（本地）
+  // 2. 最近添加（2x4 宫格）
   const recent = [...state.library]
     .filter((f) => f.kind === 'video')
     .sort((a, b) => b.addedAt - a.addedAt)
-    .slice(0, 12);
+    .slice(0, 8);
   if (recent.length > 0) {
-    body.appendChild(section('最近添加'));
+    body.appendChild(section('最近添加', () => nav('#/library')));
     const grid = document.createElement('div');
-    grid.className = 'media-grid';
-    for (const f of recent) grid.appendChild(mediaCard('local:' + f.name, f.name, sizeOf(f.size)));
+    grid.className = 'media-grid cols4';
+    for (const f of recent) {
+      const key = (f.folder ?? '') ? 'local:' + f.folder + '/' + f.name : 'local:' + f.name;
+      const card = document.createElement('div');
+      card.className = 'media-card';
+      card.innerHTML = `
+        <div class="media-thumb"><span class="media-play">▶</span></div>
+        <div class="media-name">${isFavorite(key) ? '★ ' : ''}${escapeHtml(f.name)}</div>
+        <div class="media-sub">${fmtSize(f.size)}</div>
+      `;
+      card.addEventListener('click', () => openPlayer(key));
+      grid.appendChild(card);
+    }
     body.appendChild(grid);
   }
 
-  // 媒体源
-  if (state.sources.length > 0) {
-    body.appendChild(section('媒体源'));
-    const list = document.createElement('div');
-    list.className = 'src-list';
-    for (const s of state.sources) {
+  // 3. 继续观看（最近 10 个，常规行 + 进度）
+  const records = Object.entries(state.records)
+    .filter(([key, rec]) => rec.duration > 0 && rec.time / rec.duration > 0.01 && rec.time / rec.duration < 0.97)
+    .sort((a, b) => b[1].updatedAt - a[1].updatedAt)
+    .slice(0, 10);
+  if (records.length > 0) {
+    body.appendChild(section('继续观看'));
+    for (const [key, rec] of records) {
+      const pct = Math.min(100, Math.round((rec.time / rec.duration) * 100));
       const row = document.createElement('div');
-      row.className = 'src-row';
+      row.className = 'media-row';
       row.innerHTML = `
-        <span class="src-icon">${s.type === 'webdav' ? '🗂' : '📡'}</span>
-        <div class="src-main">
-          <div class="src-name">${s.name}</div>
-          <div class="src-host">${s.host}</div>
+        ${isFavorite(key) ? '<span class="fav-star">★</span>' : ''}
+        <span class="donut" style="--p:${pct}"></span>
+        <div class="media-row-main">
+          <div class="media-row-title">${escapeHtml(titleOfKey(key))}</div>
+          <div class="media-row-sub">${fmtTime(rec.time)} / ${fmtTime(rec.duration)}</div>
         </div>
-        <span class="src-go">›</span>
+        <span class="media-row-act">▶</span>
       `;
-      row.addEventListener('click', () => nav('#/browse?src=' + s.id));
-      list.appendChild(row);
+      row.addEventListener('click', () => openPlayer(key));
+      body.appendChild(row);
     }
-    body.appendChild(list);
   }
 
-  // 空状态
-  if (records.length === 0 && recent.length === 0 && state.sources.length === 0) {
-    const empty = document.createElement('div');
-    empty.className = 'empty-state';
-    empty.innerHTML = `
-      <div class="empty-icon">▶</div>
-      <p>还没有视频</p>
-      <p class="empty-sub">去「媒体库」导入本地视频，或添加 WebDAV / Emby 媒体源</p>
-      <button class="app-btn primary" id="empty-go-lib">去媒体库</button>
-    `;
-    empty.querySelector('#empty-go-lib')!.addEventListener('click', () => nav('#/library'));
-    body.appendChild(empty);
+  // 4. 收藏（全部，常规行）
+  if (state.favorites.length > 0) {
+    body.appendChild(section('收藏'));
+    for (const key of state.favorites) {
+      const row = document.createElement('div');
+      row.className = 'media-row';
+      row.innerHTML = `
+        <span class="fav-star">★</span>
+        <div class="media-row-main">
+          <div class="media-row-title">${escapeHtml(titleOfKey(key))}</div>
+          <div class="media-row-sub">${key.startsWith('smb:') ? 'NAS' : key.startsWith('local:') ? '本地' : '媒体源'}</div>
+        </div>
+        <span class="media-row-act">▶</span>
+      `;
+      row.addEventListener('click', () => openPlayer(key));
+      body.appendChild(row);
+    }
   }
 }
 
-function section(title: string): HTMLElement {
-  const el = document.createElement('h2');
+function section(title: string, onAct?: () => void): HTMLElement {
+  const el = document.createElement('div');
   el.className = 'sec-title';
-  el.textContent = title;
+  el.innerHTML = escapeHtml(title) + (onAct ? '<button class="sec-act">+ 添加</button>' : '');
+  if (onAct) el.querySelector('.sec-act')!.addEventListener('click', onAct);
   return el;
-}
-
-function titleFor(key: string): string {
-  if (key.startsWith('local:')) return key.slice(6);
-  if (key.startsWith('webdav:')) {
-    const p = key.slice(7).split('/').slice(1).join('/');
-    const parts = p.split('/').filter(Boolean);
-    return parts[parts.length - 1] || p;
-  }
-  return key;
-}
-
-function progressText(key: string): string {
-  const rec = state.records[key];
-  if (!rec || rec.duration <= 0) return '';
-  const m1 = Math.floor(rec.time / 60);
-  const m2 = Math.floor(rec.duration / 60);
-  return `${m1}/${m2} 分钟`;
-}
-
-function sizeOf(bytes: number): string {
-  if (!bytes) return '';
-  const units = ['B', 'KB', 'MB', 'GB'];
-  let i = 0;
-  let v = bytes;
-  while (v >= 1024 && i < units.length - 1) {
-    v /= 1024;
-    i++;
-  }
-  return (v >= 100 ? Math.round(v) : v.toFixed(1)) + ' ' + units[i];
 }

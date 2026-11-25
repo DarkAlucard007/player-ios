@@ -19,7 +19,7 @@ export interface LocalFileInfo {
 interface LocalMediaPluginInterface {
   pickMedia(options: { subtitles: boolean }): Promise<{ files: PickedFile[] }>;
   listFiles(): Promise<{ files: LocalFileInfo[] }>;
-  deleteFile(options: { name: string }): Promise<{ ok: boolean }>;
+  deleteFile(options: { name: string; folder?: string }): Promise<{ ok: boolean }>;
   clearCache(): Promise<{ ok: boolean }>;
   captureFrame(options: { name: string; time: number }): Promise<{ image?: string; error?: string }>;
   saveImageToPhotos(options: { image: string }): Promise<{ ok: boolean }>;
@@ -29,6 +29,20 @@ interface LocalMediaPluginInterface {
   readLog(): Promise<{ log: string }>;
   clearLog(): Promise<{ ok: boolean }>;
   selfTest(): Promise<{ name: string; size: number }>;
+  // v1.1.26
+  setOrientation(options: { orientation: 'portrait' | 'landscapeLeft' | 'landscapeRight' }): Promise<{ ok: boolean }>;
+  listFiles(options?: { folder?: string }): Promise<{ folders: string[]; files: LocalFileInfo[] }>;
+  createFolder(options: { folder: string; name: string }): Promise<{ ok: boolean }>;
+  renameItem(options: { name: string; newName: string; folder: string }): Promise<{ ok: boolean }>;
+  moveItem(options: { name: string; folder: string; destFolder: string }): Promise<{ ok: boolean }>;
+  copyItem(options: { name: string; folder: string; destFolder: string }): Promise<{ ok: boolean }>;
+  listSMBDir(options: { host: string; port: string; share: string; path: string }): Promise<{ folders: string[]; files: LocalFileInfo[] }>;
+  createSMBFolder(options: { host: string; port: string; share: string; path: string; name: string }): Promise<{ ok: boolean }>;
+  renameSMBItem(options: { host: string; port: string; share: string; path: string; name: string; newName: string }): Promise<{ ok: boolean }>;
+  moveSMBItem(options: { host: string; port: string; share: string; path: string; name: string; destPath: string }): Promise<{ ok: boolean }>;
+  copySMBItem(options: { host: string; port: string; share: string; path: string; name: string; destPath: string }): Promise<{ ok: boolean }>;
+  deleteSMBItem(options: { host: string; port: string; share: string; path: string; name: string }): Promise<{ ok: boolean }>;
+  openSMBFile(options: { host: string; port: string; share: string; path: string; name: string }): Promise<PickedFile>;
 }
 
 export const LocalMedia = registerPlugin<LocalMediaPluginInterface>('LocalMedia');
@@ -141,17 +155,95 @@ function pickMediaWeb(subtitles: boolean): Promise<PickedFile[]> {
   });
 }
 
-/** 列出本地缓存文件 */
-export async function listLocalFiles(): Promise<LocalFileInfo[]> {
+/** 列出本地缓存文件（v1.1.26：folder 参数，""=根目录；返回该层级的文件夹与文件） */
+export async function listLocalFiles(folder = ''): Promise<{ folders: string[]; files: LocalFileInfo[] }> {
   if (isNative) {
-    const res = await LocalMedia.listFiles();
-    return res.files;
+    return LocalMedia.listFiles({ folder });
   }
-  return [];
+  return { folders: [], files: [] };
 }
 
-export async function deleteLocalFile(name: string): Promise<void> {
-  if (isNative) await LocalMedia.deleteFile({ name });
+export async function deleteLocalFile(name: string, folder = ''): Promise<void> {
+  if (isNative) await LocalMedia.deleteFile({ name, folder });
+}
+
+export async function createLocalFolder(folder: string, name: string): Promise<void> {
+  if (isNative) await LocalMedia.createFolder({ folder, name });
+}
+
+export async function renameLocalItem(name: string, newName: string, folder = ''): Promise<void> {
+  if (isNative) await LocalMedia.renameItem({ name, newName, folder });
+}
+
+export async function moveLocalItem(name: string, folder: string, destFolder: string): Promise<void> {
+  if (isNative) await LocalMedia.moveItem({ name, folder, destFolder });
+}
+
+export async function copyLocalItem(name: string, folder: string, destFolder: string): Promise<void> {
+  if (isNative) await LocalMedia.copyItem({ name, folder, destFolder });
+}
+
+export type ScreenOrientation = 'portrait' | 'landscapeLeft' | 'landscapeRight';
+
+/** 屏幕旋转（原生）；浏览器模式静默忽略 */
+export async function setOrientation(o: ScreenOrientation): Promise<void> {
+  if (!isNative) return;
+  try {
+    await LocalMedia.setOrientation({ orientation: o });
+  } catch {
+    // 忽略（某些系统版本不支持）
+  }
+}
+
+// ---- v1.1.26：NAS 目录操作（FileManager 对 smb:// 的原生支持） ----
+
+export interface SMBDirOpts {
+  host: string;
+  port?: string;
+  share: string;
+  path?: string;
+}
+
+export async function listSMBDir(opts: SMBDirOpts): Promise<{ folders: string[]; files: LocalFileInfo[] }> {
+  if (!isNative) return { folders: [], files: [] };
+  const res = await LocalMedia.listSMBDir({
+    host: opts.host,
+    port: opts.port ?? '',
+    share: opts.share ?? '',
+    path: opts.path ?? ''
+  });
+  return { folders: res.folders, files: res.files };
+}
+
+export async function createSMBFolder(opts: SMBDirOpts, name: string): Promise<void> {
+  if (!isNative) return;
+  await LocalMedia.createSMBFolder({ host: opts.host, port: opts.port ?? '', share: opts.share ?? '', path: opts.path ?? '', name });
+}
+
+export async function renameSMBItem(opts: SMBDirOpts, name: string, newName: string): Promise<void> {
+  if (!isNative) return;
+  await LocalMedia.renameSMBItem({ host: opts.host, port: opts.port ?? '', share: opts.share ?? '', path: opts.path ?? '', name, newName });
+}
+
+export async function moveSMBItem(opts: SMBDirOpts, name: string, destPath: string): Promise<void> {
+  if (!isNative) return;
+  await LocalMedia.moveSMBItem({ host: opts.host, port: opts.port ?? '', share: opts.share ?? '', path: opts.path ?? '', name, destPath });
+}
+
+export async function copySMBItem(opts: SMBDirOpts, name: string, destPath: string): Promise<void> {
+  if (!isNative) return;
+  await LocalMedia.copySMBItem({ host: opts.host, port: opts.port ?? '', share: opts.share ?? '', path: opts.path ?? '', name, destPath });
+}
+
+export async function deleteSMBItem(opts: SMBDirOpts, name: string): Promise<void> {
+  if (!isNative) return;
+  await LocalMedia.deleteSMBItem({ host: opts.host, port: opts.port ?? '', share: opts.share ?? '', path: opts.path ?? '', name });
+}
+
+/** 直接打开 NAS 视频（安全作用域登记）；失败抛错，调用方回退系统选择器 */
+export async function openSMBFile(opts: SMBDirOpts, name: string): Promise<PickedFile> {
+  if (!isNative) throw new Error('浏览器模式无 SMB');
+  return LocalMedia.openSMBFile({ host: opts.host, port: opts.port ?? '', share: opts.share ?? '', path: opts.path ?? '', name });
 }
 
 export async function clearLocalCache(): Promise<void> {
