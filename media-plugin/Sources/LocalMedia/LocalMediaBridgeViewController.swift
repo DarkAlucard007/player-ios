@@ -32,6 +32,9 @@ import Capacitor
 /// smbFiles/smbKinds 已改为 static 共享会话状态。
 public final class LocalMediaBridgeViewController: CAPBridgeViewController {
 
+    /// v1.1.24：强持有 handler 实例（configuration 的持有方式不做假设，双保险）。
+    private let localMediaHandler = LocalMediaPlugin()
+
     required public override init?(coder: NSCoder) {
         super.init(coder: coder)
         LocalMediaPlugin.Log.write("LocalMediaBridgeViewController init(coder): storyboard 已解析并实例化本类")
@@ -40,8 +43,11 @@ public final class LocalMediaBridgeViewController: CAPBridgeViewController {
     override public func webViewConfiguration(for instanceConfiguration: InstanceConfiguration) -> WKWebViewConfiguration {
         LocalMediaPlugin.Log.write("LocalMediaBridgeViewController webViewConfiguration: 开始配置 webview")
         let config = super.webViewConfiguration(for: instanceConfiguration)
-        config.setURLSchemeHandler(LocalMediaPlugin(), forURLScheme: "localmedia")
-        LocalMediaPlugin.Log.write("LocalMediaBridgeViewController: localmedia:// handler 已挂到 webview 配置（早于 webview 创建）")
+        config.setURLSchemeHandler(localMediaHandler, forURLScheme: "localmedia")
+        // 打标后 LocalMediaPlugin.load() 跳过兜底注册——iOS 26 WebKit 对同一 scheme
+        // 第二次 setURLSchemeHandler 抛 NSInvalidArgumentException → 闪退（.ips 实锤）。
+        LocalMediaPlugin.schemeInstalledByVC = true
+        LocalMediaPlugin.Log.write("LocalMediaBridgeViewController: localmedia:// handler 已挂到 webview 配置（早于 webview 创建，load() 将跳过重复注册）")
         return config
     }
 }

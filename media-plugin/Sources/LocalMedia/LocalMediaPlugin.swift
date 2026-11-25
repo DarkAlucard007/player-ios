@@ -161,14 +161,25 @@ public class LocalMediaPlugin: CAPPlugin, CAPBridgedPlugin, WKURLSchemeHandler, 
 
     private var schemeRegistered = false
 
+    /// v1.1.24：LocalMediaBridgeViewController 在 webview 创建**之前**已挂上 handler 时置 true。
+    /// load() 看到此标记必须跳过重复注册——iOS 26 WebKit 对同一 scheme 的第二次
+    /// setURLSchemeHandler 抛 NSInvalidArgumentException → SIGABRT 闪退（.ips 实锤，
+    /// 崩溃栈 setURLSchemeHandler:forURLScheme: ← registerSchemeHandler closure）。
+    static var schemeInstalledByVC = false
+
     public override func load() {
         Log.write("load() 插件初始化 webView=\(bridge?.webView == nil ? "nil" : "存在")")
+        if Self.schemeInstalledByVC {
+            Log.write("load()：handler 已由 LocalMediaBridgeViewController 预挂（webview 创建前），跳过重复注册")
+            return
+        }
         registerSchemeHandler(attempt: 0)
     }
 
     /// v1.1.20：主注册点已移到 LocalMediaBridgeViewController.webViewConfiguration(for:)
     /// （webview 创建之前，WebKit 才认）。此处 load() 里的注册是冗余兜底——
     /// 创建后再挂理论上不生效，但保留它：日志能同时呈现两处状态，便于真机排查。
+    /// v1.1.24：VC 已注册时整个兜底不再执行（重复注册会崩，见上）。
     private func registerSchemeHandler(attempt: Int) {
         if schemeRegistered { return }
         DispatchQueue.main.async { [weak self] in
