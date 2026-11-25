@@ -133,6 +133,24 @@ async function api(pathname, options = {}) {
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+/**
+ * 企业微信智能机器人推送（尽力而为：通知失败不影响构建流程）。
+ * 绑定与配置在项目根上一级的 notify/ 目录。
+ */
+const NOTIFY_DIR = path.resolve(ROOT, '..', 'notify');
+function wecomPush(markdown) {
+  if (!fs.existsSync(path.join(NOTIFY_DIR, 'wecom-notify.cjs'))) return;
+  try {
+    execFileSync('node', [path.join(NOTIFY_DIR, 'wecom-notify.cjs'), '--push', markdown], {
+      encoding: 'utf8', windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'], timeout: 90000,
+    });
+    console.log('企业微信通知已发送');
+  } catch (e) {
+    console.warn('企业微信通知失败（不影响构建）:', (e.message || '').slice(0, 200));
+  }
+}
+let RUN_URL = '';
+
 (async () => {
   console.log('App: ' + CFG.appName + ' | 版本 v' + VERSION + '（来源 package.json）');
   console.log('仓库: ' + REPO + ' | 产物: ' + ARTIFACT);
@@ -193,6 +211,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     if (!run) throw new Error('没有找到对应的 workflow run');
     console.log('run id =', run.id, '|', run.status, run.conclusion || '');
   }
+  RUN_URL = 'https://github.com/' + REPO + '/actions/runs/' + run.id;
 
   // 3) 等构建结束
   for (let i = 0; i < 200; i++) {
@@ -241,4 +260,23 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   fs.copyFileSync(path.join(unzipDir, entries[0]), ipaPath);
   console.log('IPA 已就位:', ipaPath, fs.statSync(ipaPath).size, 'bytes');
   console.log('\n完成。用爱思助手 / Sideloadly 选 Apple ID 签名安装即可。');
-})().catch((e) => { console.error('FAIL:', e.message); process.exit(1); });
+
+  // 6) 企业微信推送：构建成功
+  wecomPush(
+    '## ✅ ' + CFG.appName + ' 构建成功\n' +
+    '> 版本 **v' + VERSION + '**\n' +
+    '> 产物 ' + IPA_NAME + '\n' +
+    (RUN_URL ? '> 构建 ' + RUN_URL + '\n' : '') +
+    '已放到 downloads，用爱思助手 / Sideloadly 签名安装即可。'
+  );
+})().catch((e) => {
+  console.error('FAIL:', e.message);
+  // 企业微信推送：构建失败（尽力而为）
+  wecomPush(
+    '## ❌ ' + CFG.appName + ' 构建失败\n' +
+    '> 版本 v' + VERSION + '\n' +
+    '> 原因 ' + (e.message || '').slice(0, 200) + '\n' +
+    (RUN_URL ? '> 构建 ' + RUN_URL : '')
+  );
+  process.exit(1);
+});
