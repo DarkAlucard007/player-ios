@@ -35,7 +35,8 @@ enum B {
     }
 }
 
-// MARK: - NTLM 瀵嗙爜瀛︼紙MD4/MD5/HMAC 璧?CommonCrypto锛?enum NTLM {
+// MARK: - NTLM crypto (MD4/MD5/HMAC via CommonCrypto)
+enum NTLM {
     static func md4(_ d: Data) -> Data {
         var out = Data(count: 16)
         d.withUnsafeBytes { p in _ = CC_MD4(p.baseAddress, CC_LONG(d.count), &out) }
@@ -134,7 +135,8 @@ enum B {
     }
 }
 
-// MARK: - AES-128锛堢函 Swift锛屼粎鍔犲瘑鏂瑰悜锛屼緵 CMAC锛?enum AES {
+// MARK: - AES-128 (pure Swift, encrypt direction only, for CMAC)
+enum AES {
     static let sbox: [UInt8] = [
         0x63,0x7c,0x77,0x7b,0xf2,0x6b,0x6f,0xc5,0x30,0x01,0x67,0x2b,0xfe,0xd7,0xab,0x76,
         0xca,0x82,0xc9,0x7d,0xfa,0x59,0x47,0xf0,0xad,0xd4,0xa2,0xaf,0x9c,0xa4,0x72,0xc0,
