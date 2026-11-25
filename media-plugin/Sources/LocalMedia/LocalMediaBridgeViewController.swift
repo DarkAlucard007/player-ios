@@ -18,20 +18,27 @@ import Capacitor
 /// （源码注释明确推荐"调用 super 后修改结果"）。这里把 handler 挂上去。
 ///
 /// 根控制器从 CAPBridgeViewController 换成本类由 build-ios.yml 改写
-/// Main.storyboard 的 customClass 完成；运行时 storyboard 用
-/// NSClassFromString 实例化，能找到嵌入框架 LocalMedia.framework 里的本类。
+/// Main.storyboard 的 customClass + customModule 完成。
+///
+/// v1.1.23 勘误（v1.1.22 启动闪退根因）：
+///   v1.1.21 误判"storyboard 需要裸 ObjC 类名"，加了 @objc(LocalMediaBridgeViewController)
+///   把类的 ObjC 运行时名改成不带模块前缀的裸名。v1.1.22 把 customModule 改对了
+///   （LocalMedia），storyboard 按 "LocalMedia.LocalMediaBridgeViewController" 做
+///   模块限定查找——但 @objc 改名后精确匹配落空，解码抛异常 → 打开即闪退。
+///   去掉 @objc，Swift 类的默认 ObjC 名就是 "模块.类名"，与查找串精确吻合。
 ///
 /// 注意：本类创建的 handler 实例与 bridge 注册的插件实例是两个对象——
 /// JS 调 browseSMB 走后者、播放请求走前者，所以 LocalMediaPlugin 的
 /// smbFiles/smbKinds 已改为 static 共享会话状态。
-/// 运行时 storyboard 用 NSClassFromString 按名字实例化根控制器。Swift 类在
-/// ObjC 运行时的默认名字带模块前缀（LocalMedia.LocalMediaBridgeViewController），
-/// 必须用 @objc(LocalMediaBridgeViewController) 显式去掉前缀，否则 storyboard
-/// 里 customClass="LocalMediaBridgeViewController" 查不到类 → 根视图缺失 → 黑屏
-/// （v1.1.20 真机事故，v1.1.21 修复）。
-@objc(LocalMediaBridgeViewController)
 public final class LocalMediaBridgeViewController: CAPBridgeViewController {
+
+    override public init?(coder: NSCoder) {
+        super.init(coder: coder)
+        LocalMediaPlugin.Log.write("LocalMediaBridgeViewController init(coder): storyboard 已解析并实例化本类")
+    }
+
     override public func webViewConfiguration(for instanceConfiguration: InstanceConfiguration) -> WKWebViewConfiguration {
+        LocalMediaPlugin.Log.write("LocalMediaBridgeViewController webViewConfiguration: 开始配置 webview")
         let config = super.webViewConfiguration(for: instanceConfiguration)
         config.setURLSchemeHandler(LocalMediaPlugin(), forURLScheme: "localmedia")
         LocalMediaPlugin.Log.write("LocalMediaBridgeViewController: localmedia:// handler 已挂到 webview 配置（早于 webview 创建）")
