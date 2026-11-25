@@ -429,10 +429,16 @@ public class LocalMediaPlugin: CAPPlugin, CAPBridgedPlugin, WKURLSchemeHandler, 
         pendingPickId = nil
     }
 
-    /// SMB 文件大小：.fileSizeKey 在 SMB 远程文件上可能为 nil，兜底 .totalFileLengthKey
+    /// SMB 文件大小：.fileSizeKey 在 SMB 远程文件上可能为 nil。
+    /// 注意 .totalFileLengthKey 是 macOS 专用，iOS 上不存在（v1.1.17 云端构建踩坑），
+    /// 这里用 FileManager 的 attributesOfItem 兜底，仍取不到就返回 0（=长度未知）。
     private func smbFileSize(_ url: URL) -> Int64 {
-        if let v = try? url.resourceValues(forKeys: [.fileSizeKey, .totalFileLengthKey]) {
-            return Int64(v.fileSize ?? v.totalFileLength ?? 0)
+        if let v = try? url.resourceValues(forKeys: [.fileSizeKey]), let sz = v.fileSize, sz > 0 {
+            return Int64(sz)
+        }
+        if let attrs = try? FileManager.default.attributesOfItem(atPath: url.path),
+           let sz = (attrs[.size] as? Int).map(Int64.init), sz > 0 {
+            return sz
         }
         return 0
     }
@@ -496,11 +502,14 @@ public class LocalMediaPlugin: CAPPlugin, CAPBridgedPlugin, WKURLSchemeHandler, 
         // 现在 0 表示"长度未知"：响应不带 Content-Length（HTTP 分块传输），
         // 从偏移流读到 EOF，媒体引擎照常边下边播。
         let fileSize: Int64 = {
-            if let v = try? fileURL.resourceValues(forKeys: [.fileSizeKey, .totalFileLengthKey]),
-               let sz = Int64(v.fileSize ?? v.totalFileLength ?? 0), sz > 0 {
-                return sz
+            // 本地文件：.fileSizeKey 可靠
+            if !path.hasPrefix("smb/"),
+               let v = try? fileURL.resourceValues(forKeys: [.fileSizeKey]),
+               let sz = v.fileSize, sz > 0 {
+                return Int64(sz)
             }
-            return 0
+            // SMB 远程文件：走 smbFileSize（resourceValues → FileManager 兜底 → 0=未知）
+            return smbFileSize(fileURL)
         }()
         Log.write("scheme 文件 \(fileURL.lastPathComponent) 总长度=\(fileSize)（0=未知，分块流式）")
         let mime = Self.mimeType(for: fileURL.pathExtension)
