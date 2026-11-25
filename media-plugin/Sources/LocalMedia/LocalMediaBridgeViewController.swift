@@ -25,10 +25,10 @@ import Capacitor
 /// JS 调 browseSMB 走后者、播放请求走前者，所以 LocalMediaPlugin 的
 /// smbFiles/smbKinds 已改为 static 共享会话状态。
 public final class LocalMediaBridgeViewController: CAPBridgeViewController {
-    override open func webViewConfiguration(for instanceConfiguration: InstanceConfiguration) -> WKWebViewConfiguration {
+    override public func webViewConfiguration(for instanceConfiguration: InstanceConfiguration) -> WKWebViewConfiguration {
         let config = super.webViewConfiguration(for: instanceConfiguration)
         config.setURLSchemeHandler(LocalMediaPlugin(), forURLScheme: "localmedia")
-        Log.write("LocalMediaBridgeViewController: localmedia:// handler 已挂到 webview 配置（早于 webview 创建）")
+        LocalMediaPlugin.Log.write("LocalMediaBridgeViewController: localmedia:// handler 已挂到 webview 配置（早于 webview 创建）")
         return config
     }
 }
