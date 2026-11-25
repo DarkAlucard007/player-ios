@@ -105,6 +105,10 @@ public class LocalMediaPlugin: CAPPlugin, CAPBridgedPlugin, WKURLSchemeHandler, 
     private static var smbFiles: [String: URL] = [:]
     /// SMB 会话文件的类型（video/subtitle/other），listSMBFiles 时回传，前端据此区分
     private static var smbKinds: [String: String] = [:]
+    /// v1.1.25：SMB 文件大小缓存（登记时 stat 一次）。旧代码每个 scheme 请求都同步
+    /// resourceValues(forKeys:) 走一趟 NAS——.ips 崩溃时刻主线程正卡在这类 stat 上，
+    /// 几十个并发探测请求把 stat 堆成雪崩。会话期内文件不变，缓存即够。
+    private static var smbSizes: [String: Int64] = [:]
 
     // MARK: - 播放自测（装机一键验证：样本复制 → scheme handler → 媒体引擎）
 
@@ -333,7 +337,8 @@ public class LocalMediaPlugin: CAPPlugin, CAPBridgedPlugin, WKURLSchemeHandler, 
     @objc func listSMBFiles(_ call: CAPPluginCall) {
         var files: [[String: Any]] = []
         for (name, url) in Self.smbFiles {
-            let size = smbFileSize(url)
+            // v1.1.25：优先读缓存，避免 listSMBFiles 时逐个同步 stat NAS
+            let size = Self.smbSizes[name] ?? smbFileSize(url)
             files.append(["name": name, "size": size, "kind": Self.smbKinds[name] ?? "video"])
         }
         files.sort { ($0["name"] as? String ?? "") < ($1["name"] as? String ?? "") }
@@ -349,6 +354,7 @@ public class LocalMediaPlugin: CAPPlugin, CAPBridgedPlugin, WKURLSchemeHandler, 
             url.stopAccessingSecurityScopedResource()
         }
         Self.smbKinds.removeValue(forKey: name)
+        Self.smbSizes.removeValue(forKey: name)
         call.resolve(["ok": true])
     }
 
@@ -403,6 +409,7 @@ public class LocalMediaPlugin: CAPPlugin, CAPBridgedPlugin, WKURLSchemeHandler, 
                 url.startAccessingSecurityScopedResource()
                 Self.smbFiles[key] = url
                 let size = smbFileSize(url)
+                Self.smbSizes[key] = size
                 let ext = url.pathExtension.lowercased()
                 let kind: String
                 if Self.subtitleExts.contains(ext) {
@@ -529,9 +536,9 @@ public class LocalMediaPlugin: CAPPlugin, CAPBridgedPlugin, WKURLSchemeHandler, 
             return
         }
         // smb/<name> → 会话表里的安全作用域 URL（直接从 NAS 流式读取）
+        let smbKey = path.hasPrefix("smb/") ? String(path.dropFirst(4)) : nil
         let fileURL: URL
-        if path.hasPrefix("smb/") {
-            let key = String(path.dropFirst(4))
+        if let key = smbKey {
             Log.write("scheme 路由 SMB 会话文件 key=\(key) 现有会话=\(Array(Self.smbFiles.keys))")
             guard let smbURL = Self.smbFiles[key] else {
                 urlSchemeTask.didFailWithError(Self.error(404, "smb file not in session: " + key))
@@ -550,15 +557,24 @@ public class LocalMediaPlugin: CAPPlugin, CAPBridgedPlugin, WKURLSchemeHandler, 
         // Range 请求 parseRange 的 start<total 判断全失败 → 也落到 CL:0。
         // 现在 0 表示"长度未知"：响应不带 Content-Length（HTTP 分块传输），
         // 从偏移流读到 EOF，媒体引擎照常边下边播。
+        // v1.1.25：SMB 尺寸改读登记时缓存（smbSizes），不再每请求同步 stat NAS——
+        // .ips 崩溃时刻主线程正卡在 smbFileSize 的 resourceValues 上。
         let fileSize: Int64 = {
+            if let key = smbKey {
+                if let cached = Self.smbSizes[key], cached > 0 {
+                    return cached
+                }
+                // 缓存未命中：stat 一次并回填
+                let s = smbFileSize(fileURL)
+                Self.smbSizes[key] = s
+                return s
+            }
             // 本地文件：.fileSizeKey 可靠
-            if !path.hasPrefix("smb/"),
-               let v = try? fileURL.resourceValues(forKeys: [.fileSizeKey]),
+            if let v = try? fileURL.resourceValues(forKeys: [.fileSizeKey]),
                let sz = v.fileSize, sz > 0 {
                 return Int64(sz)
             }
-            // SMB 远程文件：走 smbFileSize（resourceValues → FileManager 兜底 → 0=未知）
-            return smbFileSize(fileURL)
+            return 0
         }()
         Log.write("scheme 文件 \(fileURL.lastPathComponent) 总长度=\(fileSize)（0=未知，分块流式）")
         let mime = Self.mimeType(for: fileURL.pathExtension)
@@ -626,24 +642,44 @@ public class LocalMediaPlugin: CAPPlugin, CAPBridgedPlugin, WKURLSchemeHandler, 
                 try? handle.close()
                 self.cancelledTasks.remove(taskID)
             }
-            do {
-                try handle.seek(toOffset: UInt64(start))
-            } catch {
-                task.didFailWithError(Self.error(500, "seek failed"))
-                return
-            }
-            // length == -1：长度未知，一直流到 EOF（readData 返回空即结束）
-            let chunk: Int64 = 256 * 1024
-            var remaining = length
-            while (length < 0 || remaining > 0) && !self.cancelledTasks.contains(taskID) {
-                let n = length < 0 ? chunk : min(chunk, remaining)
-                let data = handle.readData(ofLength: Int(n))
-                if data.isEmpty { break }
-                task.didReceive(data)
-                if length >= 0 { remaining -= Int64(data.count) }
-            }
-            if !self.cancelledTasks.contains(taskID) {
-                task.didFinish()
+            // v1.1.25：整体包进 ObjC 异常护栏。SMB/LiveFiles 读取失败时 FileHandle 的非 throwing
+            // 重载抛 NSException（Swift do/catch 接不住）→ 未捕获 → SIGABRT（.ips 实锤：
+            // 崩溃栈 closure #1 in stream ← objc_exception_throw）。护栏内任何残留异常都只让
+            // 这一次流式请求干净结束，不再拖垮整个 App。
+            localmedia_runGuarded {
+                do {
+                    try handle.seek(toOffset: UInt64(start))
+                } catch {
+                    task.didFailWithError(Self.error(500, "seek failed"))
+                    return
+                }
+                // length == -1：长度未知，一直流到 EOF（readData 返回空即结束）
+                let chunk: Int64 = 256 * 1024
+                var remaining = length
+                while length < 0 || remaining > 0 {
+                    if self.cancelledTasks.contains(taskID) { break }
+                    let n = length < 0 ? chunk : min(chunk, remaining)
+                    let data: Data
+                    do {
+                        // v1.1.25：显式 try 选中 throwing 重载——普通读取错误变成 Swift Error，
+                        // 走 didFailWithError 干净收尾，而不是 NSException 闪退。
+                        data = try handle.readData(ofLength: Int(n))
+                    } catch {
+                        Log.write("stream 读取失败（转为错误而非崩溃）：\(error.localizedDescription)")
+                        task.didFailWithError(Self.error(500, "read failed"))
+                        return
+                    }
+                    // v1.1.25：慢速 SMB 读取期间任务可能已被取消（日志里「scheme 停止」与
+                    // 后续请求交替出现就是这种竞态）；取消后再 didReceive 也会抛 NSException，
+                    // 所以读完必须再查一次。
+                    if self.cancelledTasks.contains(taskID) { break }
+                    if data.isEmpty { break }
+                    task.didReceive(data)
+                    if length >= 0 { remaining -= Int64(data.count) }
+                }
+                if !self.cancelledTasks.contains(taskID) {
+                    task.didFinish()
+                }
             }
         }
     }
