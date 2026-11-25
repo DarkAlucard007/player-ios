@@ -24,6 +24,12 @@ import Capacitor
 /// 注意：本类创建的 handler 实例与 bridge 注册的插件实例是两个对象——
 /// JS 调 browseSMB 走后者、播放请求走前者，所以 LocalMediaPlugin 的
 /// smbFiles/smbKinds 已改为 static 共享会话状态。
+/// 运行时 storyboard 用 NSClassFromString 按名字实例化根控制器。Swift 类在
+/// ObjC 运行时的默认名字带模块前缀（LocalMedia.LocalMediaBridgeViewController），
+/// 必须用 @objc(LocalMediaBridgeViewController) 显式去掉前缀，否则 storyboard
+/// 里 customClass="LocalMediaBridgeViewController" 查不到类 → 根视图缺失 → 黑屏
+/// （v1.1.20 真机事故，v1.1.21 修复）。
+@objc(LocalMediaBridgeViewController)
 public final class LocalMediaBridgeViewController: CAPBridgeViewController {
     override public func webViewConfiguration(for instanceConfiguration: InstanceConfiguration) -> WKWebViewConfiguration {
         let config = super.webViewConfiguration(for: instanceConfiguration)
