@@ -36,13 +36,13 @@ interface LocalMediaPluginInterface {
   renameItem(options: { name: string; newName: string; folder: string }): Promise<{ ok: boolean }>;
   moveItem(options: { name: string; folder: string; destFolder: string }): Promise<{ ok: boolean }>;
   copyItem(options: { name: string; folder: string; destFolder: string }): Promise<{ ok: boolean }>;
-  listSMBDir(options: { host: string; port: string; share: string; path: string }): Promise<{ folders: string[]; files: LocalFileInfo[] }>;
-  createSMBFolder(options: { host: string; port: string; share: string; path: string; name: string }): Promise<{ ok: boolean }>;
-  renameSMBItem(options: { host: string; port: string; share: string; path: string; name: string; newName: string }): Promise<{ ok: boolean }>;
-  moveSMBItem(options: { host: string; port: string; share: string; path: string; name: string; destPath: string }): Promise<{ ok: boolean }>;
-  copySMBItem(options: { host: string; port: string; share: string; path: string; name: string; destPath: string }): Promise<{ ok: boolean }>;
-  deleteSMBItem(options: { host: string; port: string; share: string; path: string; name: string }): Promise<{ ok: boolean }>;
-  openSMBFile(options: { host: string; port: string; share: string; path: string; name: string }): Promise<PickedFile>;
+  listSMBDir(options: { host: string; port: string; share: string; path: string; user?: string; pass?: string }): Promise<{ folders: string[]; files: LocalFileInfo[] }>;
+  createSMBFolder(options: { host: string; port: string; share: string; path: string; user?: string; pass?: string; name: string }): Promise<{ ok: boolean }>;
+  renameSMBItem(options: { host: string; port: string; share: string; path: string; user?: string; pass?: string; name: string; newName: string }): Promise<{ ok: boolean }>;
+  moveSMBItem(options: { host: string; port: string; share: string; path: string; user?: string; pass?: string; name: string; destPath: string }): Promise<{ ok: boolean }>;
+  copySMBItem(options: { host: string; port: string; share: string; path: string; user?: string; pass?: string; name: string; destPath: string }): Promise<{ ok: boolean }>;
+  deleteSMBItem(options: { host: string; port: string; share: string; path: string; user?: string; pass?: string; name: string }): Promise<{ ok: boolean }>;
+  openSMBFile(options: { host: string; port: string; share: string; path: string; user?: string; pass?: string; name: string }): Promise<PickedFile>;
   // v1.1.27
   connectSMB(options: { host: string; port: string; share: string }): Promise<{ ok: boolean; name?: string }>;
 }
@@ -204,6 +204,8 @@ export interface SMBDirOpts {
   port?: string;
   share: string;
   path?: string;
+  user?: string;
+  pass?: string;
 }
 
 export async function listSMBDir(opts: SMBDirOpts): Promise<{ folders: string[]; files: LocalFileInfo[] }> {
@@ -212,47 +214,42 @@ export async function listSMBDir(opts: SMBDirOpts): Promise<{ folders: string[];
     host: opts.host,
     port: opts.port ?? '',
     share: opts.share ?? '',
-    path: opts.path ?? ''
+    path: opts.path ?? '',
+    user: opts.user ?? '',
+    pass: opts.pass ?? ''
   });
   return { folders: res.folders, files: res.files };
 }
 
-/** v1.1.27：连接 NAS——弹系统「文件」选择器，用户在共享里随便选一个文件/文件夹完成授权。
- *  返回 ok=false 表示取消/失败；name 为顺带登记的选中视频（可直接播放）。 */
-export async function connectSMB(opts: SMBDirOpts): Promise<{ ok: boolean; name?: string }> {
-  if (!isNative) return { ok: false };
-  return LocalMedia.connectSMB({ host: opts.host, port: opts.port ?? '', share: opts.share ?? '' });
-}
-
 export async function createSMBFolder(opts: SMBDirOpts, name: string): Promise<void> {
   if (!isNative) return;
-  await LocalMedia.createSMBFolder({ host: opts.host, port: opts.port ?? '', share: opts.share ?? '', path: opts.path ?? '', name });
+  await LocalMedia.createSMBFolder({ host: opts.host, port: opts.port ?? '', share: opts.share ?? '', path: opts.path ?? '', user: opts.user ?? '', pass: opts.pass ?? '', name });
 }
 
 export async function renameSMBItem(opts: SMBDirOpts, name: string, newName: string): Promise<void> {
   if (!isNative) return;
-  await LocalMedia.renameSMBItem({ host: opts.host, port: opts.port ?? '', share: opts.share ?? '', path: opts.path ?? '', name, newName });
+  await LocalMedia.renameSMBItem({ host: opts.host, port: opts.port ?? '', share: opts.share ?? '', path: opts.path ?? '', user: opts.user ?? '', pass: opts.pass ?? '', name, newName });
 }
 
 export async function moveSMBItem(opts: SMBDirOpts, name: string, destPath: string): Promise<void> {
   if (!isNative) return;
-  await LocalMedia.moveSMBItem({ host: opts.host, port: opts.port ?? '', share: opts.share ?? '', path: opts.path ?? '', name, destPath });
+  await LocalMedia.moveSMBItem({ host: opts.host, port: opts.port ?? '', share: opts.share ?? '', path: opts.path ?? '', user: opts.user ?? '', pass: opts.pass ?? '', name, destPath });
 }
 
 export async function copySMBItem(opts: SMBDirOpts, name: string, destPath: string): Promise<void> {
   if (!isNative) return;
-  await LocalMedia.copySMBItem({ host: opts.host, port: opts.port ?? '', share: opts.share ?? '', path: opts.path ?? '', name, destPath });
+  await LocalMedia.copySMBItem({ host: opts.host, port: opts.port ?? '', share: opts.share ?? '', path: opts.path ?? '', user: opts.user ?? '', pass: opts.pass ?? '', name, destPath });
 }
 
 export async function deleteSMBItem(opts: SMBDirOpts, name: string): Promise<void> {
   if (!isNative) return;
-  await LocalMedia.deleteSMBItem({ host: opts.host, port: opts.port ?? '', share: opts.share ?? '', path: opts.path ?? '', name });
+  await LocalMedia.deleteSMBItem({ host: opts.host, port: opts.port ?? '', share: opts.share ?? '', path: opts.path ?? '', user: opts.user ?? '', pass: opts.pass ?? '', name });
 }
 
-/** 直接打开 NAS 视频（安全作用域登记）；失败抛错，调用方回退系统选择器 */
+/** v1.1.28：内置 SMB2 客户端直连打开 NAS 视频，无需系统选择器授权 */
 export async function openSMBFile(opts: SMBDirOpts, name: string): Promise<PickedFile> {
   if (!isNative) throw new Error('浏览器模式无 SMB');
-  return LocalMedia.openSMBFile({ host: opts.host, port: opts.port ?? '', share: opts.share ?? '', path: opts.path ?? '', name });
+  return LocalMedia.openSMBFile({ host: opts.host, port: opts.port ?? '', share: opts.share ?? '', path: opts.path ?? '', user: opts.user ?? '', pass: opts.pass ?? '', name });
 }
 
 export async function clearLocalCache(): Promise<void> {

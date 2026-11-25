@@ -133,6 +133,19 @@ public class LocalMediaPlugin: CAPPlugin, CAPBridgedPlugin, WKURLSchemeHandler, 
     private static var smbRoot: URL?
     private static var smbRootHost: String = ""
 
+    // v1.1.28：内置 SMB2 客户端直连（无需系统选择器授权）。
+    // key = "smb2:<host>|<port>|<share>|<path>/<name>"，值是持久连接的文件流。
+    private static var smb2Streams: [String: SMB2Stream] = [:]
+    private static var smb2Sizes: [String: Int64] = [:]
+
+    /// 从 JS options 构造 SMB2 连接配置（host/port/share/user/pass）
+    private static func smb2Cfg(_ opts: [String: Any]) -> SMB2Connection.Config? {
+        guard let host = opts["host"] as? String, !host.isEmpty,
+              let share = opts["share"] as? String, !share.isEmpty else { return nil }
+        let port = (opts["port"] as? String).flatMap { Int($0) } ?? 445
+        return SMB2Connection.Config(host: host, port: port, user: opts["user"] as? String ?? "", pass: opts["pass"] as? String ?? "")
+    }
+
     /// connectSMB 的异步回调 id（picker 授权回调时再取回 call）
     private var pendingSMBConnectId: String?
 
@@ -483,159 +496,120 @@ public class LocalMediaPlugin: CAPPlugin, CAPBridgedPlugin, WKURLSchemeHandler, 
 
     /// 列出 NAS 目录：folders + files（视频/字幕，含大小）。path 为相对共享根的路径。
     @objc func listSMBDir(_ call: CAPPluginCall) {
-        _ = call.options["host"] as? String ?? ""
-        guard let base = Self.smbRoot else {
-            call.reject("NAS 未连接（先点「连接 NAS」授权一次）")
+        guard let cfg = Self.smb2Cfg(call.options),
+              let share = call.options["share"] as? String else {
+            call.reject("missing host/share")
             return
         }
         let rel = (call.options["path"] as? String ?? "").trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-        let dir = rel.isEmpty ? base : base.appendingPathComponent(rel)
-        Log.write("listSMBDir \(dir.lastPathComponent)（授权根下）")
-        let fm = FileManager.default
-        guard let entries = try? fm.contentsOfDirectory(at: dir, includingPropertiesForKeys: [.fileSizeKey, .isDirectoryKey], options: [.skipsHiddenFiles]) else {
-            call.reject("smb list failed（确认「文件」App 已注册该 NAS 且网络可达）")
-            return
-        }
-        var folders: [String] = []
-        var files: [[String: Any]] = []
-        for url in entries {
-            let isDir = (try? url.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory ?? false
-            if isDir {
-                folders.append(url.lastPathComponent)
-                continue
+        Log.write("listSMBDir \(cfg.host)/\(share) \(rel)")
+        do {
+            let entries = try SMB2Client.list(cfg: cfg, share: share, path: rel)
+            var folders: [String] = []
+            var files: [[String: Any]] = []
+            for e in entries {
+                if e.isDirectory { folders.append(e.name); continue }
+                let ext = (e.name as NSString).pathExtension.lowercased()
+                guard Self.videoExts.contains(ext) || Self.subtitleExts.contains(ext) else { continue }
+                files.append(["name": e.name, "size": Int(e.endOf), "kind": Self.subtitleExts.contains(ext) ? "subtitle" : "video"])
             }
-            let ext = url.pathExtension.lowercased()
-            guard Self.videoExts.contains(ext) || Self.subtitleExts.contains(ext) else { continue }
-            let size = smbFileSize(url)
-            files.append([
-                "name": url.lastPathComponent,
-                "size": size,
-                "kind": Self.subtitleExts.contains(ext) ? "subtitle" : "video"
-            ])
+            folders.sort { $0.localizedStandardCompare($1) == .orderedAscending }
+            files.sort { ($0["name"] as? String ?? "") < ($1["name"] as? String ?? "") }
+            call.resolve(["folders": folders, "files": files])
+        } catch {
+            call.reject("smb list failed: \(error.localizedDescription)")
         }
-        folders.sort { $0.localizedStandardCompare($1) == .orderedAscending }
-        files.sort { ($0["name"] as? String ?? "") < ($1["name"] as? String ?? "") }
-        call.resolve(["folders": folders, "files": files])
     }
 
     @objc func createSMBFolder(_ call: CAPPluginCall) {
-        guard let base = Self.smbRoot,
+        guard let cfg = Self.smb2Cfg(call.options),
+              let share = call.options["share"] as? String,
               let name = call.options["name"] as? String, !name.isEmpty else {
-            call.reject(Self.smbRoot == nil ? "NAS 未连接（先点「连接 NAS」授权一次）" : "missing name")
+            call.reject("missing host/share/name")
             return
         }
         let rel = (call.options["path"] as? String ?? "").trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-        let parent = rel.isEmpty ? base : base.appendingPathComponent(rel)
-        do {
-            try FileManager.default.createDirectory(at: parent.appendingPathComponent(name, isDirectory: true), withIntermediateDirectories: true)
-            call.resolve(["ok": true])
-        } catch {
-            call.reject("create smb folder failed: \(error.localizedDescription)")
-        }
+        do { try SMB2Client.createDirectory(cfg: cfg, share: share, path: rel, name: name); call.resolve(["ok": true]) }
+        catch { call.reject("create smb folder failed: \(error.localizedDescription)") }
     }
 
     @objc func renameSMBItem(_ call: CAPPluginCall) {
-        guard let base = Self.smbRoot,
+        guard let cfg = Self.smb2Cfg(call.options),
+              let share = call.options["share"] as? String,
               let name = call.options["name"] as? String,
               let newName = call.options["newName"] as? String, !newName.isEmpty else {
-            call.reject(Self.smbRoot == nil ? "NAS 未连接（先点「连接 NAS」授权一次）" : "missing name/newName")
+            call.reject("missing host/share/name/newName")
             return
         }
         let rel = (call.options["path"] as? String ?? "").trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-        let parent = rel.isEmpty ? base : base.appendingPathComponent(rel)
-        do {
-            try FileManager.default.moveItem(at: parent.appendingPathComponent(name), to: parent.appendingPathComponent(newName))
-            call.resolve(["ok": true])
-        } catch {
-            call.reject("rename smb item failed: \(error.localizedDescription)")
-        }
+        do { try SMB2Client.rename(cfg: cfg, share: share, path: rel, name: name, newName: newName); call.resolve(["ok": true]) }
+        catch { call.reject("rename smb item failed: \(error.localizedDescription)") }
     }
 
     @objc func moveSMBItem(_ call: CAPPluginCall) {
-        guard let base = Self.smbRoot,
+        guard let cfg = Self.smb2Cfg(call.options),
+              let share = call.options["share"] as? String,
               let name = call.options["name"] as? String else {
-            call.reject(Self.smbRoot == nil ? "NAS 未连接（先点「连接 NAS」授权一次）" : "missing name")
+            call.reject("missing host/share/name")
             return
         }
         let rel = (call.options["path"] as? String ?? "").trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         let destRel = (call.options["destPath"] as? String ?? "").trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-        let src = (rel.isEmpty ? base : base.appendingPathComponent(rel)).appendingPathComponent(name)
-        let dstParent = destRel.isEmpty ? base : base.appendingPathComponent(destRel)
-        do {
-            try FileManager.default.moveItem(at: src, to: dstParent.appendingPathComponent(name))
-            call.resolve(["ok": true])
-        } catch {
-            call.reject("move smb item failed: \(error.localizedDescription)")
-        }
+        do { try SMB2Client.move(cfg: cfg, share: share, srcPath: rel, name: name, destPath: destRel); call.resolve(["ok": true]) }
+        catch { call.reject("move smb item failed: \(error.localizedDescription)") }
     }
 
     @objc func copySMBItem(_ call: CAPPluginCall) {
-        guard let base = Self.smbRoot,
+        guard let cfg = Self.smb2Cfg(call.options),
+              let share = call.options["share"] as? String,
               let name = call.options["name"] as? String else {
-            call.reject(Self.smbRoot == nil ? "NAS 未连接（先点「连接 NAS」授权一次）" : "missing name")
+            call.reject("missing host/share/name")
             return
         }
         let rel = (call.options["path"] as? String ?? "").trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         let destRel = (call.options["destPath"] as? String ?? "").trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-        let src = (rel.isEmpty ? base : base.appendingPathComponent(rel)).appendingPathComponent(name)
-        let dstParent = destRel.isEmpty ? base : base.appendingPathComponent(destRel)
-        do {
-            try FileManager.default.copyItem(at: src, to: dstParent.appendingPathComponent(name))
-            call.resolve(["ok": true])
-        } catch {
-            call.reject("copy smb item failed: \(error.localizedDescription)")
-        }
+        do { try SMB2Client.copy(cfg: cfg, share: share, srcPath: rel, name: name, destPath: destRel); call.resolve(["ok": true]) }
+        catch { call.reject("copy smb item failed: \(error.localizedDescription)") }
     }
 
     @objc func deleteSMBItem(_ call: CAPPluginCall) {
-        guard let base = Self.smbRoot,
+        guard let cfg = Self.smb2Cfg(call.options),
+              let share = call.options["share"] as? String,
               let name = call.options["name"] as? String else {
-            call.reject(Self.smbRoot == nil ? "NAS 未连接（先点「连接 NAS」授权一次）" : "missing name")
+            call.reject("missing host/share/name")
             return
         }
         let rel = (call.options["path"] as? String ?? "").trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-        let target = (rel.isEmpty ? base : base.appendingPathComponent(rel)).appendingPathComponent(name)
-        do {
-            try FileManager.default.removeItem(at: target)
-            call.resolve(["ok": true])
-        } catch {
-            call.reject("delete smb item failed: \(error.localizedDescription)")
-        }
+        do { try SMB2Client.remove(cfg: cfg, share: share, path: rel, name: name); call.resolve(["ok": true]) }
+        catch { call.reject("delete smb item failed: \(error.localizedDescription)") }
     }
 
-    /// v1.1.26：从 NAS 目录直接打开视频。v1.1.27 改在授权根（LiveFiles）上定位文件——
-    /// 根已 startAccessing，子路径天然可访问，无需再对子文件做作用域登记。
-    /// 登记进 SMB 会话表后返回 localmedia URL，播放器直接从 NAS 流式读。
+    /// v1.1.28：内置 SMB2 客户端直连打开视频，无需系统选择器授权。
+    /// 打开持久流登记进 smb2Streams，返回 localmedia URL（key 前缀 smb2:），
+    /// scheme handler 从该流按 Range 偏移读取。
     @objc func openSMBFile(_ call: CAPPluginCall) {
-        guard let base = Self.smbRoot,
+        guard let cfg = Self.smb2Cfg(call.options),
+              let share = call.options["share"] as? String,
               let name = call.options["name"] as? String else {
-            call.reject(Self.smbRoot == nil ? "NAS 未连接（先点「连接 NAS」授权一次）" : "missing name")
+            call.reject("missing host/share/name")
             return
         }
         let rel = (call.options["path"] as? String ?? "").trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-        let fileURL = (rel.isEmpty ? base : base.appendingPathComponent(rel)).appendingPathComponent(name)
-        Log.write("openSMBFile \(name)（授权根下）")
-        let key = (rel.isEmpty ? "" : rel + "/") + name
-        if Self.smbFiles[key] != nil {
-            let size = Self.smbSizes[key] ?? 0
-            call.resolve(["name": key, "size": size, "url": "localmedia:///smb%2F\(key.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? key)"])
+        let key = "smb2:\(cfg.host)|\(cfg.port)|\(share)|" + (rel.isEmpty ? "" : rel + "/") + name
+        if let existing = Self.smb2Streams[key] {
+            let size = Self.smb2Sizes[key] ?? Int64(existing.endOf)
+            call.resolve(["name": key, "size": size, "url": "localmedia:///smb2%2F\(key.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? key)"])
             return
         }
-        guard FileManager.default.fileExists(atPath: fileURL.path) else {
-            call.reject("smb file not found: \(name)")
-            return
+        do {
+            let stream = try SMB2Stream(cfg: cfg, share: share, path: rel, name: name)
+            Self.smb2Streams[key] = stream
+            Self.smb2Sizes[key] = Int64(stream.endOf)
+            Log.write("openSMBFile 登记 \(key)（\(stream.endOf) bytes，SMB2 直连）")
+            call.resolve(["name": key, "size": Int64(stream.endOf), "url": "localmedia:///smb2%2F\(key.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? key)"])
+        } catch {
+            call.reject("open smb file failed: \(error.localizedDescription)")
         }
-        Self.smbFiles[key] = fileURL
-        let size = smbFileSize(fileURL)
-        Self.smbSizes[key] = size
-        let ext = fileURL.pathExtension.lowercased()
-        Self.smbKinds[key] = Self.subtitleExts.contains(ext) ? "subtitle" : "video"
-        Log.write("openSMBFile 登记 \(key)（\(size) bytes）")
-        call.resolve([
-            "name": key,
-            "size": size,
-            "url": "localmedia:///smb%2F\(key.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? key)"
-        ])
     }
 
     @objc func clearCache(_ call: CAPPluginCall) {
@@ -750,6 +724,10 @@ public class LocalMediaPlugin: CAPPlugin, CAPBridgedPlugin, WKURLSchemeHandler, 
         }
         Self.smbKinds.removeValue(forKey: name)
         Self.smbSizes.removeValue(forKey: name)
+        if let s2 = Self.smb2Streams.removeValue(forKey: name) {
+            Self.smb2Sizes.removeValue(forKey: name)
+            s2.close()
+        }
         call.resolve(["ok": true])
     }
 
@@ -970,6 +948,43 @@ public class LocalMediaPlugin: CAPPlugin, CAPBridgedPlugin, WKURLSchemeHandler, 
             urlSchemeTask.didFailWithError(Self.error(404, "empty path"))
             return
         }
+        // v1.1.28：smb2/<key> → 内置 SMB2 直连流（无需系统选择器授权）
+        if path.hasPrefix("smb2/") {
+            let key = String(path.dropFirst(5))
+            Log.write("scheme 路由 SMB2 直连流 key=\(key)")
+            guard let s2 = Self.smb2Streams[key] else {
+                urlSchemeTask.didFailWithError(Self.error(404, "smb2 stream not open: " + key))
+                return
+            }
+            let total = Int64(s2.endOf)
+            let namePart = key.split(separator: "|").last.map(String.init) ?? key
+            let ext = namePart.split(separator: "/").last.map(String.init).flatMap { ($0 as NSString).pathExtension } ?? ""
+            let mime = Self.mimeType(for: ext)
+            let rangeHeader = urlSchemeTask.request.value(forHTTPHeaderField: "Range")
+            if let rangeHeader, let (start, end) = Self.parseRange(rangeHeader, total: total) {
+                var h = Self.corsHeaders()
+                h["Content-Type"] = mime
+                h["Content-Range"] = "bytes \(start)-\(end)/\(total)"
+                h["Accept-Ranges"] = "bytes"
+                h["Content-Length"] = "\(end - start + 1)"
+                let response = HTTPURLResponse(url: url, statusCode: 206, httpVersion: "HTTP/1.1", headerFields: h)!
+                urlSchemeTask.didReceive(response)
+                streamSMB2(s2, from: start, length: end - start + 1, task: urlSchemeTask)
+            } else {
+                let start: Int64 = {
+                    if let rangeHeader, let (s, _) = Self.parseRangeOpen(rangeHeader) { return s }
+                    return 0
+                }()
+                var h = Self.corsHeaders()
+                h["Content-Type"] = mime
+                h["Accept-Ranges"] = "bytes"
+                h["Content-Length"] = "\(total)"
+                let response = HTTPURLResponse(url: url, statusCode: 200, httpVersion: "HTTP/1.1", headerFields: h)!
+                urlSchemeTask.didReceive(response)
+                streamSMB2(s2, from: start, length: total - start, task: urlSchemeTask)
+            }
+            return
+        }
         // smb/<name> → 会话表里的安全作用域 URL（直接从 NAS 流式读取）
         let smbKey = path.hasPrefix("smb/") ? String(path.dropFirst(4)) : nil
         let fileURL: URL
@@ -1115,6 +1130,38 @@ public class LocalMediaPlugin: CAPPlugin, CAPBridgedPlugin, WKURLSchemeHandler, 
                 if !self.cancelledTasks.contains(taskID) {
                     task.didFinish()
                 }
+            }
+        }
+    }
+
+    /// v1.1.28：从内置 SMB2 流读取。与 stream() 相同的安全模型——后台队列、取消竞态复查、
+    /// 异常护栏——只是数据源换成 SMB2Stream.read（走 SMB2 READ 命令而非 FileHandle）。
+    private func streamSMB2(_ s2: SMB2Stream, from start: Int64, length: Int64, task: any WKURLSchemeTask) {
+        let taskID = ObjectIdentifier(task)
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            guard let self else { return }
+            defer { self.cancelledTasks.remove(taskID) }
+            localmedia_runGuarded {
+                let chunk: Int64 = 256 * 1024
+                var offset = start
+                var remaining = length
+                while length < 0 || remaining > 0 {
+                    if self.cancelledTasks.contains(taskID) { break }
+                    let n = length < 0 ? chunk : min(chunk, remaining)
+                    let data: [UInt8]
+                    do { data = try s2.read(offset: UInt64(offset), length: Int(n)) }
+                    catch {
+                        Log.write("streamSMB2 读取失败（转为错误而非崩溃）：\(error.localizedDescription)")
+                        task.didFailWithError(Self.error(500, "smb2 read failed"))
+                        return
+                    }
+                    if self.cancelledTasks.contains(taskID) { break }
+                    if data.isEmpty { break }
+                    task.didReceive(Data(data))
+                    offset += Int64(data.count)
+                    if length >= 0 { remaining -= Int64(data.count) }
+                }
+                if !self.cancelledTasks.contains(taskID) { task.didFinish() }
             }
         }
     }
