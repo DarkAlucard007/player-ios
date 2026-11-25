@@ -9,6 +9,10 @@
 //   node upload-tools/build-ipa.mjs --dry-run           环境自检，不触发构建
 //   RUN_ID=123456 node upload-tools/build-ipa.mjs       复用已有 run
 //
+// 通知约定（2026-11-25 用户要求）：构建失败默认不推企业微信——失败通常是可自修的
+// 中间态，继续重试即可；只有最终决定停止重试时才加 --notify-failure 推送。
+// 构建成功始终推送。
+//
 // 所有可变项都从 app.config.json 读取；令牌从 Windows 凭据管理器（git credential）读取，
 // 全程不打印、不落盘。
 import { execFileSync } from 'node:child_process';
@@ -32,6 +36,7 @@ const OUT_DIR = path.join(ROOT, 'downloads');
 const argv = process.argv.slice(2);
 const PUSH_FLAG = argv.includes('--push');
 const DRY_RUN = argv.includes('--dry-run');
+const NOTIFY_FAILURE = argv.includes('--notify-failure');
 const PUSH_MSG = (() => {
   const i = argv.indexOf('--push');
   if (i < 0) return '';
@@ -271,12 +276,17 @@ let RUN_URL = '';
   );
 })().catch((e) => {
   console.error('FAIL:', e.message);
-  // 企业微信推送：构建失败（尽力而为）
-  wecomPush(
-    '## ❌ ' + CFG.appName + ' 构建失败\n' +
-    '> 版本 v' + VERSION + '\n' +
-    '> 原因 ' + (e.message || '').slice(0, 200) + '\n' +
-    (RUN_URL ? '> 构建 ' + RUN_URL : '')
-  );
+  // 企业微信推送：构建失败——按约定默认不推（中间态失败继续自修重试），
+  // 仅当最终决定停止时加 --notify-failure 才推送
+  if (NOTIFY_FAILURE) {
+    wecomPush(
+      '## ❌ ' + CFG.appName + ' 构建失败（已停止重试）\n' +
+      '> 版本 v' + VERSION + '\n' +
+      '> 原因 ' + (e.message || '').slice(0, 200) + '\n' +
+      (RUN_URL ? '> 构建 ' + RUN_URL : '')
+    );
+  } else {
+    console.log('构建失败但按约定不推送企业微信（继续自修重试；最终停止时加 --notify-failure）');
+  }
   process.exit(1);
 });
