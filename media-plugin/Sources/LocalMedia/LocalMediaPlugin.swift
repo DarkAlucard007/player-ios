@@ -139,7 +139,7 @@ public class LocalMediaPlugin: CAPPlugin, CAPBridgedPlugin, WKURLSchemeHandler, 
     private static var smb2Sizes: [String: Int64] = [:]
 
     /// 从 JS options 构造 SMB2 连接配置（host/port/share/user/pass）
-    private static func smb2Cfg(_ opts: [String: Any]) -> SMB2Connection.Config? {
+    private static func smb2Cfg(_ opts: [AnyHashable: Any]) -> SMB2Connection.Config? {
         guard let host = opts["host"] as? String, !host.isEmpty,
               let share = opts["share"] as? String, !share.isEmpty else { return nil }
         let port = (opts["port"] as? String).flatMap { Int($0) } ?? 445
@@ -598,7 +598,7 @@ public class LocalMediaPlugin: CAPPlugin, CAPBridgedPlugin, WKURLSchemeHandler, 
         let key = "smb2:\(cfg.host)|\(cfg.port)|\(share)|" + (rel.isEmpty ? "" : rel + "/") + name
         if let existing = Self.smb2Streams[key] {
             let size = Self.smb2Sizes[key] ?? Int64(existing.endOf)
-            call.resolve(["name": key, "size": size, "url": "localmedia:///smb2%2F\(key.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? key)"])
+            call.resolve(["name": key, "size": size, "url": "localmedia:///smb2%2F\(key.addingPercentEncoding(withAllowedCharacters: CharacterSet.urlPathAllowed) ?? key)"])
             return
         }
         do {
@@ -606,7 +606,7 @@ public class LocalMediaPlugin: CAPPlugin, CAPBridgedPlugin, WKURLSchemeHandler, 
             Self.smb2Streams[key] = stream
             Self.smb2Sizes[key] = Int64(stream.endOf)
             Log.write("openSMBFile 登记 \(key)（\(stream.endOf) bytes，SMB2 直连）")
-            call.resolve(["name": key, "size": Int64(stream.endOf), "url": "localmedia:///smb2%2F\(key.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? key)"])
+            call.resolve(["name": key, "size": Int64(stream.endOf), "url": "localmedia:///smb2%2F\(key.addingPercentEncoding(withAllowedCharacters: CharacterSet.urlPathAllowed) ?? key)"])
         } catch {
             call.reject("open smb file failed: \(error.localizedDescription)")
         }

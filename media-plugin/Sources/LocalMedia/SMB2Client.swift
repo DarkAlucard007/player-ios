@@ -55,14 +55,14 @@ enum NTLM {
         let oPad = Data(keyB.map { $0 ^ 0x5C })
         let iP = Data(keyB.map { $0 ^ 0x36 })
         msg.withUnsafeBytes { mp in oPad.withUnsafeBytes { op in iP.withUnsafeBytes { ip in
-            _ = CCHmac(CC_ALGORITHM(kCCHmacAlgMD5), ip.baseAddress, ip.count, mp.baseAddress, mp.count, &out)
+            _ = CCHmac(kCCHmacAlgMD5, ip.baseAddress, ip.count, mp.baseAddress, mp.count, &out)
         }}}
         return out
     }
     static func hmacSHA256(_ key: Data, _ msg: Data) -> Data {
         var out = Data(count: 32)
         key.withUnsafeBytes { kp in msg.withUnsafeBytes { mp in
-            _ = CCHmac(CC_ALGORITHM(kCCHmacAlgSHA256), kp.baseAddress, kp.count, mp.baseAddress, mp.count, &out)
+            _ = CCHmac(kCCHmacAlgSHA256, kp.baseAddress, kp.count, mp.baseAddress, mp.count, &out)
         }}
         return out
     }
@@ -173,21 +173,21 @@ enum AES {
             var temp = w[i-1]
             if i % 4 == 0 {
                 temp = [temp[1], temp[2], temp[3], temp[0]]
-                temp = temp.map { sbox[$0] }
+                temp = temp.map { sbox[Int($0)] }
                 temp[0] ^= rcon[i/4]
             }
             w[i] = [UInt8(w[i-4][0] ^ temp[0]), UInt8(w[i-4][1] ^ temp[1]),
                     UInt8(w[i-4][2] ^ temp[2]), UInt8(w[i-4][3] ^ temp[3])]
         }
-        var rk = [[UInt8]](repeating: [0,0,0,0], count: 11)
+        var rk = [[[UInt8]]](repeating: [[0,0,0],[0,0,0],[0,0,0],[0,0,0]], count: 11)
         for r in 0..<11 { for c in 0..<4 { rk[r][c] = w[r*4+c] } }
         return rk
     }
-    static func encryptBlock(_ block: [UInt8], rk: [[UInt8]]) -> [UInt8] {
+    static func encryptBlock(_ block: [UInt8], rk: [[[UInt8]]]) -> [UInt8] {
         var st = [[UInt8]](repeating: [0,0,0,0], count: 4)
         for c in 0..<4 { for r in 0..<4 { st[r][c] = block[r + 4*c] } }
         func addRoundKey(_ round: Int) { for c in 0..<4 { for r in 0..<4 { st[r][c] ^= rk[round][c][r] } } }
-        func subBytes() { for c in 0..<4 { for r in 0..<4 { st[r][c] = sbox[st[r][c]] } } }
+        func subBytes() { for c in 0..<4 { for r in 0..<4 { st[r][c] = sbox[Int(st[r][c])] } } }
         func shiftRows() { for r in 1..<4 { st[r] = Array(st[r][r...]) + Array(st[r][..<r]) } }
         func mixColumns() {
             for c in 0..<4 {
@@ -319,18 +319,19 @@ final class SMB2Connection {
     }
     private func header(_ cmd: UInt8, id: UInt64, sign: Bool) -> [UInt8] {
         var h = [UInt8](repeating: 0, count: 64)
-        h[0...3] = B.le32(0xFE534D42)
-        h[4...5] = B.le16(64)
-        h[6...7] = B.le16(0)
-        h[8...11] = B.le32(0)
+        func put(_ bytes: [UInt8], _ off: Int) { for i in 0..<bytes.count { h[off + i] = bytes[i] } }
+        put(B.le32(0xFE534D42), 0)
+        put(B.le16(64), 4)
+        put(B.le16(0), 6)
+        put(B.le32(0), 8)
         h[12] = cmd
         h[13] = 1
-        h[14...17] = sign ? B.le32(0x00000008) : B.le32(0)
-        h[18...21] = B.le32(0)
-        h[22...29] = B.le64(id)
-        h[30...33] = B.le32(0)
-        h[34...37] = B.le32(treeId)
-        h[38...45] = B.le64(sessionId)
+        put(sign ? B.le32(0x00000008) : B.le32(0), 14)
+        put(B.le32(0), 18)
+        put(B.le64(id), 22)
+        put(B.le32(0), 30)
+        put(B.le32(treeId), 34)
+        put(B.le64(sessionId), 38)
         return h
     }
     private func signMsg(_ data: [UInt8]) -> [UInt8] {
@@ -390,7 +391,7 @@ final class SMB2Connection {
     private func rpc(_ cmd: UInt8, _ body: [UInt8], sign: Bool) throws -> [UInt8] {
         msgId &+= 1
         var msg = header(cmd, id: msgId, sign: sign && requireSigning) + body
-        if sign && requireSigning { msg[46..<62] = signMsg(msg) }
+        if sign && requireSigning { let sig = signMsg(msg); for i in 0..<16 { msg[46 + i] = sig[i] } }
         try sendRaw(msg)
         let resp = try receive()
         if requireSigning && B.u32(resp, 14) != 0 {
@@ -521,7 +522,7 @@ final class SMB2Connection {
     func rpcWrite(_ body: [UInt8]) throws -> [UInt8] {
         msgId &+= 1
         var msg = header(Self.opWrite, id: msgId, sign: requireSigning) + body
-        if requireSigning { msg[46..<62] = signMsg(msg) }
+        if requireSigning { let sig = signMsg(msg); for i in 0..<16 { msg[46 + i] = sig[i] } }
         try sendRaw(msg)
         return try receive()
     }
