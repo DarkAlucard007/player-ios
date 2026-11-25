@@ -157,10 +157,38 @@ public class LocalMediaPlugin: CAPPlugin, CAPBridgedPlugin, WKURLSchemeHandler, 
 
     // MARK: - 注册 URL scheme 处理器
 
+    private var schemeRegistered = false
+
     public override func load() {
-        Log.write("load() 插件初始化")
-        bridge?.webView?.configuration.setURLSchemeHandler(self, forURLScheme: Self.scheme)
-        Log.write("load() localmedia:// scheme handler 已注册")
+        Log.write("load() 插件初始化 webView=\(bridge?.webView == nil ? "nil" : "存在")")
+        registerSchemeHandler(attempt: 0)
+    }
+
+    /// v1.1.18：localmedia:// handler 注册改主线程 + nil 重试。
+    /// v1.1.17 真机复现：插件方法全部正常，但日志 0 条「scheme 请求」、媒体引擎直接 code=4——
+    /// 可选链 `bridge?.webView?.configuration.setURLSchemeHandler` 在 load() 时 webView 为 nil
+    /// 会静默跳过（且 Capacitor 7 在后台 "bridge" 队列调用 load()，WebKit configuration 变更不可靠）。
+    /// 现在显式切主线程注册、每步留日志；webView 为 nil 时每 500ms 重试，最多 5 次。
+    private func registerSchemeHandler(attempt: Int) {
+        if schemeRegistered { return }
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            if self.schemeRegistered { return }
+            guard let config = self.bridge?.webView?.configuration else {
+                if attempt < 5 {
+                    Log.write("scheme 注册：webView 仍为 nil，500ms 后重试（\(attempt + 1)/5）")
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+                        self?.registerSchemeHandler(attempt: attempt + 1)
+                    }
+                } else {
+                    Log.write("scheme 注册失败：webView 持续为 nil —— localmedia:// 播放将全部 code=4（请把此日志发出）")
+                }
+                return
+            }
+            config.setURLSchemeHandler(self, forURLScheme: Self.scheme)
+            self.schemeRegistered = true
+            Log.write("scheme 注册成功 localmedia://（主线程，attempt=\(attempt)）")
+        }
     }
 
     // MARK: - Actions
