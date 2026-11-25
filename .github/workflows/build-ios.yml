@@ -116,19 +116,23 @@ jobs:
 
       # v1.1.20：localmedia:// handler 必须在 WKWebView 创建前挂上配置（WebKit 创建时快照
       # handler 表，之后设置无效）。根控制器换成 LocalMedia 框架里的子类
-      # LocalMediaBridgeViewController（它覆写 webViewConfiguration(for:) 注册 handler），
-      # 只需改写 storyboard 的 customClass；运行时 NSClassFromString 能找到嵌入框架的类。
+      # LocalMediaBridgeViewController（它覆写 webViewConfiguration(for:) 注册 handler）。
+      # v1.1.22 修黑屏：模板 storyboard 带 customModule="Capacitor"，运行时按「模块.类名」
+      # 解析；v1.1.20/21 只改了 customClass 的值，模块名仍指向 Capacitor → 查
+      # Capacitor.LocalMediaBridgeViewController 落空 → 根控制器实例化失败 → 黑屏。
+      # 必须把属性对整体换成本框架的模块名 LocalMedia。
       - name: 根控制器换为 LocalMediaBridgeViewController（scheme handler 提前注册）
         run: |
           python3 - <<'PY'
           import io
           p = 'ios/App/App/Base.lproj/Main.storyboard'
           s = io.open(p, encoding='utf-8').read()
-          n = s.count('customClass="CAPBridgeViewController"')
-          assert n == 1, 'storyboard 里 customClass="CAPBridgeViewController" 出现 %d 次（应为1）' % n
-          s = s.replace('customClass="CAPBridgeViewController"', 'customClass="LocalMediaBridgeViewController"')
+          pair = 'customClass="CAPBridgeViewController" customModule="Capacitor"'
+          n = s.count(pair)
+          assert n == 1, 'storyboard 里根控制器属性对出现 %d 次（应为1）' % n
+          s = s.replace(pair, 'customClass="LocalMediaBridgeViewController" customModule="LocalMedia"')
           io.open(p, 'w', encoding='utf-8').write(s)
-          print('storyboard 根控制器 -> LocalMediaBridgeViewController')
+          print('storyboard 根控制器 -> LocalMedia.LocalMediaBridgeViewController')
           PY
 
       # 关键：把原生插件类写进运行时注册表，否则真机报 plugin is not implemented
