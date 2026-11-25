@@ -43,6 +43,8 @@ interface LocalMediaPluginInterface {
   copySMBItem(options: { host: string; port: string; share: string; path: string; name: string; destPath: string }): Promise<{ ok: boolean }>;
   deleteSMBItem(options: { host: string; port: string; share: string; path: string; name: string }): Promise<{ ok: boolean }>;
   openSMBFile(options: { host: string; port: string; share: string; path: string; name: string }): Promise<PickedFile>;
+  // v1.1.27
+  connectSMB(options: { host: string; port: string; share: string }): Promise<{ ok: boolean; name?: string }>;
 }
 
 export const LocalMedia = registerPlugin<LocalMediaPluginInterface>('LocalMedia');
@@ -213,6 +215,13 @@ export async function listSMBDir(opts: SMBDirOpts): Promise<{ folders: string[];
     path: opts.path ?? ''
   });
   return { folders: res.folders, files: res.files };
+}
+
+/** v1.1.27：连接 NAS——弹系统「文件」选择器，用户在共享里随便选一个文件/文件夹完成授权。
+ *  返回 ok=false 表示取消/失败；name 为顺带登记的选中视频（可直接播放）。 */
+export async function connectSMB(opts: SMBDirOpts): Promise<{ ok: boolean; name?: string }> {
+  if (!isNative) return { ok: false };
+  return LocalMedia.connectSMB({ host: opts.host, port: opts.port ?? '', share: opts.share ?? '' });
 }
 
 export async function createSMBFolder(opts: SMBDirOpts, name: string): Promise<void> {

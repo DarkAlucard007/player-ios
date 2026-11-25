@@ -728,6 +728,27 @@ body.player-open #app {
   margin-bottom: 12px;
 }
 
+.smb-connect {
+  background: var(--bg2);
+  border: 1px solid rgba(0, 229, 255, 0.25);
+  border-radius: var(--radius);
+  padding: 16px 14px;
+  text-align: center;
+}
+
+.smb-connect-title {
+  margin: 0 0 8px;
+  font-size: 17px;
+  font-weight: 700;
+  color: var(--accent);
+  text-shadow: var(--glow);
+}
+
+.smb-connect .app-btn {
+  margin-top: 12px;
+  width: 100%;
+}
+
 /* ===== 搜索 ===== */
 
 .search-box {

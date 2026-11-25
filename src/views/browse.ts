@@ -1,4 +1,4 @@
-// 浏览（v1.1.26 设计稿 V4）：媒体源列表（浏览/配置按钮）+ NAS 目录树 + WebDAV / Emby / Jellyfin 浏览
+// 浏览（v1.1.27 设计稿 V4）：媒体源列表（浏览/配置按钮）+ NAS 目录树（选择器授权根）+ WebDAV / Emby / Jellyfin 浏览
 
 import { state, addLocalFiles, toggleFavorite } from '../core/store';
 import type { MediaItem, Source } from '../core/types';
@@ -9,6 +9,7 @@ import { confirmDialog, modal, promptDialog, toast } from '../components/ui';
 import { fmtSize, escapeHtml, isVideoName, titleOfKey } from '../core/util';
 import {
   browseSMB,
+  connectSMB,
   listSMBDir,
   openSMBFile,
   createSMBFolder,
@@ -181,11 +182,14 @@ function fmtDur(sec: number): string {
   return Math.floor(m / 60) + ' 小时 ' + (m % 60) + ' 分';
 }
 
-// ---- NAS (SMB) 目录树浏览（v1.1.26：原生 smb:// 直连，无需系统「文件」App） ----
+// ---- NAS (SMB) 目录树浏览（v1.1.27：系统选择器授权一次 → LiveFiles 共享根 → FileManager 遍历） ----
 
 function smbOpts(source: Source, path: string): SMBDirOpts {
   return { host: source.host, port: source.port || undefined, share: source.share || '', path };
 }
+
+/** v1.1.27：当前已授权的 NAS host（App 进程级；换源或 App 重启后需重新连接） */
+let smbConnectedHost = '';
 
 function renderSMBTree(body: HTMLElement, source: Source, path = ''): void {
   body.innerHTML = `
@@ -194,10 +198,10 @@ function renderSMBTree(body: HTMLElement, source: Source, path = ''): void {
       <span class="tb-path" data-s="path"></span>
       <button class="tb-new" data-s="new">+ 新建文件夹</button>
     </div>
-    <div data-s="body"><div class="loading">连接 NAS…</div></div>
+    <div data-s="body"><div class="loading">…</div></div>
     <div class="smb-setup" style="margin-top:14px">
       <p class="smb-note">点视频直接流式播放；ℹ 可收藏/改名/移动/复制/删除；长按进入多选。
-      若列表为空或连接失败，可退回系统选择器：<button class="app-btn" data-s="picker" style="margin-top:8px">📂 系统选择器选视频</button></p>
+      也可以退回系统选择器：<button class="app-btn" data-s="picker" style="margin-top:8px">📂 系统选择器选视频</button></p>
     </div>
   `;
   const pathEl = body.querySelector<HTMLElement>('[data-s="path"]')!;
@@ -219,6 +223,34 @@ function renderSMBTree(body: HTMLElement, source: Source, path = ''): void {
     }
   });
   body.querySelector('[data-s="picker"]')!.addEventListener('click', () => void doBrowseSMB(body, source));
+  if (smbConnectedHost !== source.host) {
+    boxEl.innerHTML = `
+      <div class="smb-connect">
+        <p class="smb-connect-title">🔗 连接 NAS</p>
+        <p class="smb-note">沙盒限制：App 不能直连 smb://，需要你在系统「文件」选择器里
+        进入该 NAS 共享，<b>随便选一个文件或文件夹</b>完成一次性授权（App 重启后需再连一次）。
+        授权后目录树就能直接浏览、点视频播放。</p>
+        <button class="app-btn" data-s="connect">🔗 连接 ${escapeHtml(source.host)}</button>
+      </div>`;
+    boxEl.querySelector('[data-s="connect"]')!.addEventListener('click', async () => {
+      boxEl.innerHTML = '<div class="loading">请在弹出的系统选择器里选 NAS 共享内任意文件/文件夹…</div>';
+      try {
+        const r = await connectSMB(smbOpts(source, ''));
+        if (!r.ok) return;
+        smbConnectedHost = source.host;
+        if (r.name) {
+          toast('已连接，直接播放你选中的视频…');
+          openPlayer('smb:' + r.name);
+          return;
+        }
+        renderSMBTree(body, source, path);
+      } catch (e) {
+        renderSMBTree(body, source, path);
+        toast('连接失败: ' + (e instanceof Error ? e.message : String(e)));
+      }
+    });
+    return;
+  }
   void listDir(body, source, path);
 }
 
@@ -228,7 +260,13 @@ async function listDir(body: HTMLElement, source: Source, path: string): Promise
   try {
     res = await listSMBDir(smbOpts(source, path));
   } catch (e) {
-    boxEl.innerHTML = `<div class="loading error">连接失败：${escapeHtml(e instanceof Error ? e.message : String(e))}<br>（确认 NAS 可达、共享名正确；或在系统「文件」App 注册过该 SMB 服务器）</div>`;
+    const msg = e instanceof Error ? e.message : String(e);
+    if (msg.includes('未连接')) {
+      smbConnectedHost = '';
+      renderSMBTree(body, source, path);
+      return;
+    }
+    boxEl.innerHTML = `<div class="loading error">连接失败：${escapeHtml(msg)}<br>（NAS 会话可能已过期，返回重试连接）</div>`;
     return;
   }
   boxEl.innerHTML = '';

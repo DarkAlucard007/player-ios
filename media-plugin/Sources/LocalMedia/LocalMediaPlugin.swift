@@ -47,7 +47,9 @@ public class LocalMediaPlugin: CAPPlugin, CAPBridgedPlugin, WKURLSchemeHandler, 
         CAPPluginMethod(name: "moveSMBItem", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "copySMBItem", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "deleteSMBItem", returnType: CAPPluginReturnPromise),
-        CAPPluginMethod(name: "openSMBFile", returnType: CAPPluginReturnPromise)
+        CAPPluginMethod(name: "openSMBFile", returnType: CAPPluginReturnPromise),
+        // v1.1.27：系统选择器授权一次拿到 NAS 共享根（LiveFiles 安全作用域），目录树在其上遍历
+        CAPPluginMethod(name: "connectSMB", returnType: CAPPluginReturnPromise)
     ]
 
     // MARK: - 调试日志（同步写文件：闪退后日志依然存活，供 App 内查看/复制）
@@ -122,6 +124,17 @@ public class LocalMediaPlugin: CAPPlugin, CAPBridgedPlugin, WKURLSchemeHandler, 
     /// resourceValues(forKeys:) 走一趟 NAS——.ips 崩溃时刻主线程正卡在这类 stat 上，
     /// 几十个并发探测请求把 stat 堆成雪崩。会话期内文件不变，缓存即够。
     private static var smbSizes: [String: Int64] = [:]
+
+    /// v1.1.27：NAS 共享根（LiveFiles 安全作用域 URL）。
+    /// 沙盒 App 里 FileManager 直连 smb:// 没有权限——必须经系统「文件」选择器授权一次，
+    /// 拿到 file:///private/var/mobile/Library/LiveFiles/com.apple.filesystems.smbclientd/<挂载> 形式的根，
+    /// 之后目录树（枚举/新建/改名/移动/复制/删除/播放）全部在这个根上用 FileManager 操作。
+    /// 授权的生命周期 = App 进程；App 被杀后需重新 connectSMB。
+    private static var smbRoot: URL?
+    private static var smbRootHost: String = ""
+
+    /// connectSMB 的异步回调 id（picker 授权回调时再取回 call）
+    private var pendingSMBConnectId: String?
 
     // MARK: - 播放自测（装机一键验证：样本复制 → scheme handler → 媒体引擎）
 
@@ -393,30 +406,73 @@ public class LocalMediaPlugin: CAPPlugin, CAPBridgedPlugin, WKURLSchemeHandler, 
             call.reject("bad orientation: \(o)")
             return
         }
-        Log.write("setOrientation \(o) → requestGeometryUpdate 已发出")
-        if let scene = UIApplication.shared.connectedScenes.first as? UIWindowScene {
-            if #available(iOS 16.0, *) {
-                scene.requestGeometryUpdate(.iOS(interfaceOrientations: mask)) { err in
-                    if let e = err as NSError? { Log.write("requestGeometryUpdate 回调：\(e.localizedDescription)") }
+        // v1.1.27：.ips 实锤 requestGeometryUpdate 从 Capacitor bridge 的后台队列调用时
+        // 抛 NSException（UIApplication 断言主线程）→ 未捕获 → SIGABRT。
+        // 一律切主线程执行，并用 ObjC++ 异常护栏兜底（场景状态异常时只丢这次请求不闪退）。
+        DispatchQueue.main.async {
+            Log.write("setOrientation \(o)（主线程）")
+            var done = false
+            if let scene = UIApplication.shared.connectedScenes.first as? UIWindowScene {
+                if #available(iOS 16.0, *) {
+                    done = localmedia_runGuarded {
+                        scene.requestGeometryUpdate(.iOS(interfaceOrientations: mask)) { err in
+                            if let e = err as NSError? { Log.write("requestGeometryUpdate 回调：\(e.localizedDescription)") }
+                        }
+                    }
                 }
-                call.resolve(["ok": true])
-                return
             }
+            if !done {
+                // iOS 14/15 回退（私有 API，仅兜底，同样护栏）
+                let dev: UIDeviceOrientation
+                switch mask {
+                case .landscapeLeft: dev = .landscapeRight
+                case .landscapeRight: dev = .landscapeLeft
+                default: dev = .portrait
+                }
+                _ = localmedia_runGuarded {
+                    UIDevice.current.setValue(dev, forKey: "orientation")
+                }
+            }
+            call.resolve(["ok": true])
         }
-        // iOS 14/15 回退（私有 API，仅兜底）
-        let dev: UIDeviceOrientation
-        switch mask {
-        case .landscapeLeft: dev = .landscapeRight
-        case .landscapeRight: dev = .landscapeLeft
-        default: dev = .portrait
-        }
-        UIDevice.current.setValue(dev, forKey: "orientation")
-        call.resolve(["ok": true])
     }
 
     // MARK: - v1.1.26：NAS（SMB）目录枚举与文件操作
-    // 基于 FileManager 对 smb:// URL 的原生支持：只要「文件」App 已注册过该
-    // SMB 服务器（凭证由系统保管），App 就能直接枚举/创建/改名/移动/复制/删除。
+    // v1.1.27 重写：沙盒 App 里 FileManager 直连 smb:// 无权限（v1.1.26 实测 listSMBDir 全部
+    // 失败）。改为 connectSMB 经系统「文件」选择器授权一次，拿到 LiveFiles 共享根的安全作用域，
+    // 之后所有目录树操作都在这个根上做。
+
+    /// v1.1.27：连接 NAS——弹系统选择器（「文件」App 界面），用户在 NAS 共享里随便选一个
+    /// 文件/文件夹即完成授权；从选中 URL 反推共享根并 startAccessing，登记为 smbRoot。
+    @objc func connectSMB(_ call: CAPPluginCall) {
+        DispatchQueue.main.async {
+            let host = call.options["host"] as? String ?? ""
+            Log.write("connectSMB 开始 host=\(host)（系统选择器授权）")
+            guard !host.isEmpty else {
+                call.reject("missing host")
+                return
+            }
+            guard let anchor = self.presentingAnchor() else {
+                call.reject("no presentation anchor")
+                return
+            }
+            let picker = UIDocumentPickerViewController(forOpeningContentTypes: Self.smbPickTypes, asCopy: false)
+            picker.delegate = self
+            self.bridge?.saveCall(call)
+            self.pendingSMBConnectId = call.callbackId
+            anchor.present(picker, animated: true)
+        }
+    }
+
+    /// 从 LiveFiles URL 反推 NAS 共享根（…/com.apple.filesystems.smbclientd/<挂载>/）
+    private static func smbRootFromLiveFilesURL(_ url: URL) -> URL? {
+        let comps = url.pathComponents
+        guard let i = comps.firstIndex(of: "com.apple.filesystems.smbclientd"), i + 1 < comps.count else {
+            return nil
+        }
+        let rootPath = "/" + comps[1...(i + 1)].joined(separator: "/")
+        return URL(fileURLWithPath: rootPath)
+    }
 
     private func smbBaseURL(host: String, port: String, share: String) -> URL? {
         var h = host.trimmingCharacters(in: .whitespaces)
@@ -427,15 +483,14 @@ public class LocalMediaPlugin: CAPPlugin, CAPBridgedPlugin, WKURLSchemeHandler, 
 
     /// 列出 NAS 目录：folders + files（视频/字幕，含大小）。path 为相对共享根的路径。
     @objc func listSMBDir(_ call: CAPPluginCall) {
-        guard let host = call.options["host"] as? String, !host.isEmpty,
-              let share = call.options["share"] as? String, !share.isEmpty,
-              let base = smbBaseURL(host: host, port: (call.options["port"] as? String) ?? "", share: share) else {
-            call.reject("missing host/share")
+        _ = call.options["host"] as? String ?? ""
+        guard let base = Self.smbRoot else {
+            call.reject("NAS 未连接（先点「连接 NAS」授权一次）")
             return
         }
         let rel = (call.options["path"] as? String ?? "").trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         let dir = rel.isEmpty ? base : base.appendingPathComponent(rel)
-        Log.write("listSMBDir \(dir.absoluteString)")
+        Log.write("listSMBDir \(dir.lastPathComponent)（授权根下）")
         let fm = FileManager.default
         guard let entries = try? fm.contentsOfDirectory(at: dir, includingPropertiesForKeys: [.fileSizeKey, .isDirectoryKey], options: [.skipsHiddenFiles]) else {
             call.reject("smb list failed（确认「文件」App 已注册该 NAS 且网络可达）")
@@ -464,10 +519,9 @@ public class LocalMediaPlugin: CAPPlugin, CAPBridgedPlugin, WKURLSchemeHandler, 
     }
 
     @objc func createSMBFolder(_ call: CAPPluginCall) {
-        guard let host = call.options["host"] as? String, let share = call.options["share"] as? String,
-              let base = smbBaseURL(host: host, port: (call.options["port"] as? String) ?? "", share: share),
+        guard let base = Self.smbRoot,
               let name = call.options["name"] as? String, !name.isEmpty else {
-            call.reject("missing host/share/name")
+            call.reject(Self.smbRoot == nil ? "NAS 未连接（先点「连接 NAS」授权一次）" : "missing name")
             return
         }
         let rel = (call.options["path"] as? String ?? "").trimmingCharacters(in: CharacterSet(charactersIn: "/"))
@@ -481,11 +535,10 @@ public class LocalMediaPlugin: CAPPlugin, CAPBridgedPlugin, WKURLSchemeHandler, 
     }
 
     @objc func renameSMBItem(_ call: CAPPluginCall) {
-        guard let host = call.options["host"] as? String, let share = call.options["share"] as? String,
-              let base = smbBaseURL(host: host, port: (call.options["port"] as? String) ?? "", share: share),
+        guard let base = Self.smbRoot,
               let name = call.options["name"] as? String,
               let newName = call.options["newName"] as? String, !newName.isEmpty else {
-            call.reject("missing host/share/name/newName")
+            call.reject(Self.smbRoot == nil ? "NAS 未连接（先点「连接 NAS」授权一次）" : "missing name/newName")
             return
         }
         let rel = (call.options["path"] as? String ?? "").trimmingCharacters(in: CharacterSet(charactersIn: "/"))
@@ -499,10 +552,9 @@ public class LocalMediaPlugin: CAPPlugin, CAPBridgedPlugin, WKURLSchemeHandler, 
     }
 
     @objc func moveSMBItem(_ call: CAPPluginCall) {
-        guard let host = call.options["host"] as? String, let share = call.options["share"] as? String,
-              let base = smbBaseURL(host: host, port: (call.options["port"] as? String) ?? "", share: share),
+        guard let base = Self.smbRoot,
               let name = call.options["name"] as? String else {
-            call.reject("missing host/share/name")
+            call.reject(Self.smbRoot == nil ? "NAS 未连接（先点「连接 NAS」授权一次）" : "missing name")
             return
         }
         let rel = (call.options["path"] as? String ?? "").trimmingCharacters(in: CharacterSet(charactersIn: "/"))
@@ -518,10 +570,9 @@ public class LocalMediaPlugin: CAPPlugin, CAPBridgedPlugin, WKURLSchemeHandler, 
     }
 
     @objc func copySMBItem(_ call: CAPPluginCall) {
-        guard let host = call.options["host"] as? String, let share = call.options["share"] as? String,
-              let base = smbBaseURL(host: host, port: (call.options["port"] as? String) ?? "", share: share),
+        guard let base = Self.smbRoot,
               let name = call.options["name"] as? String else {
-            call.reject("missing host/share/name")
+            call.reject(Self.smbRoot == nil ? "NAS 未连接（先点「连接 NAS」授权一次）" : "missing name")
             return
         }
         let rel = (call.options["path"] as? String ?? "").trimmingCharacters(in: CharacterSet(charactersIn: "/"))
@@ -537,10 +588,9 @@ public class LocalMediaPlugin: CAPPlugin, CAPBridgedPlugin, WKURLSchemeHandler, 
     }
 
     @objc func deleteSMBItem(_ call: CAPPluginCall) {
-        guard let host = call.options["host"] as? String, let share = call.options["share"] as? String,
-              let base = smbBaseURL(host: host, port: (call.options["port"] as? String) ?? "", share: share),
+        guard let base = Self.smbRoot,
               let name = call.options["name"] as? String else {
-            call.reject("missing host/share/name")
+            call.reject(Self.smbRoot == nil ? "NAS 未连接（先点「连接 NAS」授权一次）" : "missing name")
             return
         }
         let rel = (call.options["path"] as? String ?? "").trimmingCharacters(in: CharacterSet(charactersIn: "/"))
@@ -553,28 +603,26 @@ public class LocalMediaPlugin: CAPPlugin, CAPBridgedPlugin, WKURLSchemeHandler, 
         }
     }
 
-    /// v1.1.26：从 NAS 目录直接打开视频——尝试对 smb:// URL 做安全作用域登记
-    /// （「文件」App 已注册凭证时通常成功），登记进 SMB 会话表后返回 localmedia URL。
-    /// 失败时返回 error，前端回退到系统选择器流程。
+    /// v1.1.26：从 NAS 目录直接打开视频。v1.1.27 改在授权根（LiveFiles）上定位文件——
+    /// 根已 startAccessing，子路径天然可访问，无需再对子文件做作用域登记。
+    /// 登记进 SMB 会话表后返回 localmedia URL，播放器直接从 NAS 流式读。
     @objc func openSMBFile(_ call: CAPPluginCall) {
-        guard let host = call.options["host"] as? String, let share = call.options["share"] as? String,
-              let base = smbBaseURL(host: host, port: (call.options["port"] as? String) ?? "", share: share),
+        guard let base = Self.smbRoot,
               let name = call.options["name"] as? String else {
-            call.reject("missing host/share/name")
+            call.reject(Self.smbRoot == nil ? "NAS 未连接（先点「连接 NAS」授权一次）" : "missing name")
             return
         }
         let rel = (call.options["path"] as? String ?? "").trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         let fileURL = (rel.isEmpty ? base : base.appendingPathComponent(rel)).appendingPathComponent(name)
-        Log.write("openSMBFile \(fileURL.absoluteString)")
+        Log.write("openSMBFile \(name)（授权根下）")
         let key = (rel.isEmpty ? "" : rel + "/") + name
         if Self.smbFiles[key] != nil {
             let size = Self.smbSizes[key] ?? 0
             call.resolve(["name": key, "size": size, "url": "localmedia:///smb%2F\(key.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? key)"])
             return
         }
-        let ok = fileURL.startAccessingSecurityScopedResource()
-        guard ok else {
-            call.reject("smb scope access denied（改用系统选择器选一次即可）")
+        guard FileManager.default.fileExists(atPath: fileURL.path) else {
+            call.reject("smb file not found: \(name)")
             return
         }
         Self.smbFiles[key] = fileURL
@@ -693,7 +741,12 @@ public class LocalMediaPlugin: CAPPlugin, CAPBridgedPlugin, WKURLSchemeHandler, 
             return
         }
         if let url = Self.smbFiles.removeValue(forKey: name) {
-            url.stopAccessingSecurityScopedResource()
+            // v1.1.27：授权根（smbRoot）作用域内的子文件不再单独 stopAccessing——
+            // 作用域挂在根上，子路径 start/stop 不平衡会破坏根的授权。
+            let underRoot = Self.smbRoot.map { url.path.hasPrefix($0.path) } ?? false
+            if !underRoot {
+                url.stopAccessingSecurityScopedResource()
+            }
         }
         Self.smbKinds.removeValue(forKey: name)
         Self.smbSizes.removeValue(forKey: name)
@@ -741,6 +794,41 @@ public class LocalMediaPlugin: CAPPlugin, CAPBridgedPlugin, WKURLSchemeHandler, 
     public func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
         Log.write("documentPicker 选中 \(urls.count) 个文件")
         controller.dismiss(animated: true)
+
+        // v1.1.27：connectSMB 授权——从选中 URL 反推 LiveFiles 共享根并 startAccessing
+        if let id = pendingSMBConnectId {
+            pendingSMBConnectId = nil
+            guard let url = urls.first else {
+                resolveSaved(id, data: ["ok": false])
+                return
+            }
+            guard let root = Self.smbRootFromLiveFilesURL(url) else {
+                rejectSaved(id, message: "请选择 NAS 共享内的任意文件/文件夹（当前选中的不是 SMB 共享内容）")
+                return
+            }
+            let ok = root.startAccessingSecurityScopedResource()
+            Log.write("connectSMB 根 \(root.lastPathComponent) startAccessing=\(ok)")
+            guard ok else {
+                rejectSaved(id, message: "NAS 授权失败，请重试")
+                return
+            }
+            Self.smbRoot = root
+            Self.smbRootHost = ""
+            // 顺便登记选中的文件（若是视频/字幕），连接完即可直接播放
+            var pickedName: String? = nil
+            let ext = url.pathExtension.lowercased()
+            if Self.videoExts.contains(ext) || Self.subtitleExts.contains(ext) {
+                let relParent = String(url.deletingLastPathComponent().path.dropFirst(root.path.count)).trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+                let key = relParent.isEmpty ? url.lastPathComponent : relParent + "/" + url.lastPathComponent
+                Self.smbFiles[key] = url
+                Self.smbSizes[key] = smbFileSize(url)
+                Self.smbKinds[key] = Self.subtitleExts.contains(ext) ? "subtitle" : "video"
+                pickedName = key
+                Log.write("connectSMB 顺带登记 \(key)")
+            }
+            resolveSaved(id, data: ["ok": true, "name": pickedName ?? NSNull()])
+            return
+        }
 
         // SMB 流式模式（browseSMB，asCopy:false）：不拷贝，保持安全作用域访问登记进会话表，播放器直接从 NAS 流式读
         if let id = pendingSMBBrowseId {
@@ -806,6 +894,11 @@ public class LocalMediaPlugin: CAPPlugin, CAPBridgedPlugin, WKURLSchemeHandler, 
     public func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) {
         Log.write("documentPicker 取消")
         controller.dismiss(animated: true)
+        if let id = pendingSMBConnectId {
+            pendingSMBConnectId = nil
+            rejectSaved(id, message: "已取消连接")
+            return
+        }
         if let id = pendingSMBBrowseId {
             pendingSMBBrowseId = nil
             resolveSaved(id, data: ["files": []])
