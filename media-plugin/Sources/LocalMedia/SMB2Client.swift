@@ -55,14 +55,14 @@ enum NTLM {
         let oPad = Data(keyB.map { $0 ^ 0x5C })
         let iP = Data(keyB.map { $0 ^ 0x36 })
         msg.withUnsafeBytes { mp in oPad.withUnsafeBytes { op in iP.withUnsafeBytes { ip in
-            _ = CCHmac(kCCHmacAlgMD5, ip.baseAddress, ip.count, mp.baseAddress, mp.count, &out)
+            _ = CCHmac(CCHmacAlgorithm(kCCHmacAlgMD5), ip.baseAddress, ip.count, mp.baseAddress, mp.count, &out)
         }}}
         return out
     }
     static func hmacSHA256(_ key: Data, _ msg: Data) -> Data {
         var out = Data(count: 32)
         key.withUnsafeBytes { kp in msg.withUnsafeBytes { mp in
-            _ = CCHmac(kCCHmacAlgSHA256, kp.baseAddress, kp.count, mp.baseAddress, mp.count, &out)
+            _ = CCHmac(CCHmacAlgorithm(kCCHmacAlgSHA256), kp.baseAddress, kp.count, mp.baseAddress, mp.count, &out)
         }}
         return out
     }
@@ -166,7 +166,7 @@ enum AES {
         }
         return p
     }
-    static func expandKey(_ key: [UInt8]) -> [[UInt8]] {
+    static func expandKey(_ key: [UInt8]) -> [[[UInt8]]] {
         var w = [[UInt8]](repeating: [0,0,0,0], count: 44)
         for i in 0..<4 { w[i] = [key[i*4], key[i*4+1], key[i*4+2], key[i*4+3]] }
         for i in 4..<44 {
