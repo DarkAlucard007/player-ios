@@ -99,10 +99,12 @@ public class LocalMediaPlugin: CAPPlugin, CAPBridgedPlugin, WKURLSchemeHandler, 
     /// browseSMB 的异步回调 id（SMB picker 模式；didPickDocumentsAt 见它已设置就走流式登记、不拷贝）
     private var pendingSMBBrowseId: String?
 
-    /// SMB 会话文件：名称 → 安全作用域 URL（保持 startAccessing 直到 release）
-    private var smbFiles: [String: URL] = [:]
+    /// SMB 会话文件：名称 → 安全作用域 URL（保持 startAccessing 直到 release）。
+    /// v1.1.20 改为 static：scheme handler 实例（LocalMediaBridgeViewController 创建）
+    /// 与 bridge 插件实例（JS 调 browseSMB）是两个对象，会话状态必须共享。
+    private static var smbFiles: [String: URL] = [:]
     /// SMB 会话文件的类型（video/subtitle/other），listSMBFiles 时回传，前端据此区分
-    private var smbKinds: [String: String] = [:]
+    private static var smbKinds: [String: String] = [:]
 
     // MARK: - 播放自测（装机一键验证：样本复制 → scheme handler → 媒体引擎）
 
@@ -164,11 +166,9 @@ public class LocalMediaPlugin: CAPPlugin, CAPBridgedPlugin, WKURLSchemeHandler, 
         registerSchemeHandler(attempt: 0)
     }
 
-    /// v1.1.18：localmedia:// handler 注册改主线程 + nil 重试。
-    /// v1.1.17 真机复现：插件方法全部正常，但日志 0 条「scheme 请求」、媒体引擎直接 code=4——
-    /// 可选链 `bridge?.webView?.configuration.setURLSchemeHandler` 在 load() 时 webView 为 nil
-    /// 会静默跳过（且 Capacitor 7 在后台 "bridge" 队列调用 load()，WebKit configuration 变更不可靠）。
-    /// 现在显式切主线程注册、每步留日志；webView 为 nil 时每 500ms 重试，最多 5 次。
+    /// v1.1.20：主注册点已移到 LocalMediaBridgeViewController.webViewConfiguration(for:)
+    /// （webview 创建之前，WebKit 才认）。此处 load() 里的注册是冗余兜底——
+    /// 创建后再挂理论上不生效，但保留它：日志能同时呈现两处状态，便于真机排查。
     private func registerSchemeHandler(attempt: Int) {
         if schemeRegistered { return }
         DispatchQueue.main.async { [weak self] in
@@ -321,9 +321,9 @@ public class LocalMediaPlugin: CAPPlugin, CAPBridgedPlugin, WKURLSchemeHandler, 
 
     @objc func listSMBFiles(_ call: CAPPluginCall) {
         var files: [[String: Any]] = []
-        for (name, url) in smbFiles {
+        for (name, url) in Self.smbFiles {
             let size = smbFileSize(url)
-            files.append(["name": name, "size": size, "kind": smbKinds[name] ?? "video"])
+            files.append(["name": name, "size": size, "kind": Self.smbKinds[name] ?? "video"])
         }
         files.sort { ($0["name"] as? String ?? "") < ($1["name"] as? String ?? "") }
         call.resolve(["files": files])
@@ -334,10 +334,10 @@ public class LocalMediaPlugin: CAPPlugin, CAPBridgedPlugin, WKURLSchemeHandler, 
             call.reject("missing name")
             return
         }
-        if let url = smbFiles.removeValue(forKey: name) {
+        if let url = Self.smbFiles.removeValue(forKey: name) {
             url.stopAccessingSecurityScopedResource()
         }
-        smbKinds.removeValue(forKey: name)
+        Self.smbKinds.removeValue(forKey: name)
         call.resolve(["ok": true])
     }
 
@@ -390,7 +390,7 @@ public class LocalMediaPlugin: CAPPlugin, CAPBridgedPlugin, WKURLSchemeHandler, 
             for url in urls {
                 let key = uniqueSMBName(url.lastPathComponent)
                 url.startAccessingSecurityScopedResource()
-                smbFiles[key] = url
+                Self.smbFiles[key] = url
                 let size = smbFileSize(url)
                 let ext = url.pathExtension.lowercased()
                 let kind: String
@@ -401,7 +401,7 @@ public class LocalMediaPlugin: CAPPlugin, CAPBridgedPlugin, WKURLSchemeHandler, 
                 } else {
                     kind = "other"
                 }
-                smbKinds[key] = kind
+                Self.smbKinds[key] = kind
                 Log.write("SMB 登记 \(key) <- \(url)（\(kind)）")
                 results.append([
                     "name": key,
@@ -475,7 +475,7 @@ public class LocalMediaPlugin: CAPPlugin, CAPBridgedPlugin, WKURLSchemeHandler, 
     private func uniqueSMBName(_ name: String) -> String {
         var candidate = name
         var i = 1
-        while smbFiles[candidate] != nil {
+        while Self.smbFiles[candidate] != nil {
             if let dot = name.lastIndex(of: "."), dot > name.index(name.startIndex, offsetBy: 1) {
                 candidate = name[..<dot] + " (\(i))" + name[dot...]
             } else {
@@ -521,8 +521,8 @@ public class LocalMediaPlugin: CAPPlugin, CAPBridgedPlugin, WKURLSchemeHandler, 
         let fileURL: URL
         if path.hasPrefix("smb/") {
             let key = String(path.dropFirst(4))
-            Log.write("scheme 路由 SMB 会话文件 key=\(key) 现有会话=\(Array(smbFiles.keys))")
-            guard let smbURL = smbFiles[key] else {
+            Log.write("scheme 路由 SMB 会话文件 key=\(key) 现有会话=\(Array(Self.smbFiles.keys))")
+            guard let smbURL = Self.smbFiles[key] else {
                 urlSchemeTask.didFailWithError(Self.error(404, "smb file not in session: " + key))
                 return
             }

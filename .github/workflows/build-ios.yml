@@ -1,4 +1,4 @@
-﻿name: 构建 App (iOS IPA)
+name: 构建 App (iOS IPA)
 
 # 手动触发：Actions → 构建 App (iOS IPA) → Run workflow
 # 也可以由 upload-tools/build-ipa.mjs 通过 API 自动触发（推荐）。
@@ -113,6 +113,23 @@ jobs:
 
       - name: 同步网页到原生工程
         run: npx cap sync ios
+
+      # v1.1.20：localmedia:// handler 必须在 WKWebView 创建前挂上配置（WebKit 创建时快照
+      # handler 表，之后设置无效）。根控制器换成 LocalMedia 框架里的子类
+      # LocalMediaBridgeViewController（它覆写 webViewConfiguration(for:) 注册 handler），
+      # 只需改写 storyboard 的 customClass；运行时 NSClassFromString 能找到嵌入框架的类。
+      - name: 根控制器换为 LocalMediaBridgeViewController（scheme handler 提前注册）
+        run: |
+          python3 - <<'PY'
+          import io
+          p = 'ios/App/App/Base.lproj/Main.storyboard'
+          s = io.open(p, encoding='utf-8').read()
+          n = s.count('customClass="CAPBridgeViewController"')
+          assert n == 1, 'storyboard 里 customClass="CAPBridgeViewController" 出现 %d 次（应为1）' % n
+          s = s.replace('customClass="CAPBridgeViewController"', 'customClass="LocalMediaBridgeViewController"')
+          io.open(p, 'w', encoding='utf-8').write(s)
+          print('storyboard 根控制器 -> LocalMediaBridgeViewController')
+          PY
 
       # 关键：把原生插件类写进运行时注册表，否则真机报 plugin is not implemented
       - name: 注册原生插件到 Capacitor 运行时
@@ -290,6 +307,18 @@ jobs:
           samples = glob.glob(os.path.join(app, 'Frameworks', '*.framework', '**', 'sample.mp4'), recursive=True)
           assert samples, 'sample.mp4 NOT bundled in any framework (pod Resources not effective)'
           print('sample.mp4 OK:', samples)
+
+          # v1.1.20：根控制器必须是 LocalMediaBridgeViewController（storyboard 改写生效），
+          # 否则 localmedia:// handler 挂不到 webview 上，真机播放全 code=4
+          hit = False
+          for nib in glob.glob(os.path.join(app, 'Base.lproj', 'Main.storyboardc', '*')):
+              if os.path.isfile(nib):
+                  blob = open(nib, 'rb').read()
+                  if b'LocalMediaBridgeViewController' in blob:
+                      hit = True
+                      break
+          assert hit, 'Main.storyboardc 未引用 LocalMediaBridgeViewController（storyboard 改写未生效）'
+          print('storyboard root VC OK: LocalMediaBridgeViewController')
           print('archive verification OK')
           PY
           then

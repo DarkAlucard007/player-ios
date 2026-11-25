@@ -39,8 +39,11 @@ export function renderSettings(el: HTMLElement): void {
     </div>
     <div class="set-group">
       <h3>播放自测（装机验证）</h3>
-      <p class="set-about">一键验证原生播放链路：内置样本 → localmedia:// 读取 → 媒体引擎解码。全部通过 = App 本身能播视频，问题只会出在网络源；有失败项 = 点「查看日志」把原生日志发给开发者。</p>
-      <button class="app-btn primary" id="set-selftest" ${isNative ? '' : 'disabled'}>🎬 运行播放自测</button>
+      <p class="set-about">一键验证原生播放链路：内置样本 → localmedia:// 读取 → 媒体引擎解码。全部通过 = App 本身能播视频，问题只会出在网络源；有失败项 = 点「复制自测结果」或「查看日志」把文字直接发给开发者。</p>
+      <div class="pl-actions">
+        <button class="app-btn primary" id="set-selftest" ${isNative ? '' : 'disabled'}>🎬 运行播放自测</button>
+        <button class="app-btn" id="set-selftest-copy" ${isNative ? '' : 'disabled'}>📋 复制自测结果</button>
+      </div>
       <div id="selftest-result" class="selftest-box"></div>
     </div>
     <div class="set-group">
@@ -94,6 +97,19 @@ export function renderSettings(el: HTMLElement): void {
   }
 
   el.querySelector('#set-selftest')!.addEventListener('click', () => void runSelfTest(el));
+  // v1.1.20：把自测结果序列化成纯文本复制——用户直接粘贴给开发者，不再截屏
+  el.querySelector('#set-selftest-copy')!.addEventListener('click', () => {
+    const box = el.querySelector<HTMLElement>('#selftest-result')!;
+    const lines = Array.from(box.querySelectorAll('.selftest-row, .selftest-sum'))
+      .map((n) => n.textContent?.trim() || '');
+    const text = lines.length
+      ? lines.join('\n')
+      : '（还没有自测结果，先点「运行播放自测」）';
+    copyText(text).then(
+      () => toast('已复制自测结果，直接粘贴发给开发者'),
+      () => toast('复制失败，请长按文本手动复制')
+    );
+  });
   el.querySelector('#set-log-view')!.addEventListener('click', async () => {
     toast('正在读取日志…');
     const log = await readLog();
@@ -237,4 +253,21 @@ function finishSummary(box: HTMLElement, videoOK: boolean, _unused: boolean): vo
     sum.textContent = `结论：❌ 媒体引擎未播放成功（${fails} 项未通过）—— 点下方「查看日志」把完整原生日志复制给开发者（重点看「scheme 请求」行）。`;
   }
   box.appendChild(sum);
+}
+
+/** v1.1.20：通用复制——优先 Clipboard API，WKWebView 自定义 scheme 源上不可用时
+ *  退回 textarea + execCommand('copy')（同步用户手势内调用，兼容性最好）。 */
+async function copyText(text: string): Promise<void> {
+  if (navigator.clipboard && window.isSecureContext) {
+    await navigator.clipboard.writeText(text);
+    return;
+  }
+  const ta = document.createElement('textarea');
+  ta.value = text;
+  ta.style.cssText = 'position:fixed;left:-9999px;top:0;opacity:0;';
+  document.body.appendChild(ta);
+  ta.select();
+  const ok = document.execCommand('copy');
+  ta.remove();
+  if (!ok) throw new Error('execCommand copy failed');
 }
