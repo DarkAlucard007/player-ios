@@ -197,8 +197,8 @@ jobs:
       - name: FFmpegShim 搜索路径改绝对路径（绕开 pod xcconfig 变量解析不定）
         if: ${{ hashFiles('media-plugin/FFmpegShim.podspec') != '' }}
         run: |
-          sed -i 's|\$(SRCROOT)/FFmpegShim/include|'"$GITHUB_WORKSPACE"'/media-plugin/FFmpegShim/include|g' media-plugin/FFmpegShim.podspec
-          sed -i 's|\$(SRCROOT)/FFmpegShim/libs|'"$GITHUB_WORKSPACE"'/media-plugin/FFmpegShim/libs|g' media-plugin/FFmpegShim.podspec
+          sed -i '' 's|\$(SRCROOT)/FFmpegShim/include|'"$GITHUB_WORKSPACE"'/media-plugin/FFmpegShim/include|g' media-plugin/FFmpegShim.podspec
+          sed -i '' 's|\$(SRCROOT)/FFmpegShim/libs|'"$GITHUB_WORKSPACE"'/media-plugin/FFmpegShim/libs|g' media-plugin/FFmpegShim.podspec
           grep -n SEARCH_PATHS media-plugin/FFmpegShim.podspec
 
       # 有本地 pod 插件时才需要
