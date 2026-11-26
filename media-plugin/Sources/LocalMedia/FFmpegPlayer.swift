@@ -85,8 +85,10 @@ final class FFmpegPlayer {
         var ioCtx: UnsafeMutablePointer<AVIOContext>?
         ioCtx = avio_alloc_context(ioBuf, ioSize, 0, ioOpaque, ff_avioRead, nil, ff_avioSeek)
         guard ioCtx != nil else { fail("avio_alloc_context 失败"); return }
-        var fmt: OpaquePointer?
-        let rc = avformat_open_input(&fmt, nil, nil, &ioCtx)
+        let fmt = avformat_alloc_context()
+        guard fmt != nil else { fail("avformat_alloc_context 失败"); return }
+        ff_format_set_pb(fmt, ioCtx) // 挂自定义 AVIO，再用空 URL 打开
+        let rc = avformat_open_input(&fmt, "", nil, nil)
         if rc < 0 { fail("avformat_open_input 失败 rc=\(rc)"); return }
         setupAfterOpen(fmt)
     }
