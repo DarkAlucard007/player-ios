@@ -10,8 +10,8 @@ Pod::Spec.new do |s|
   s.source       = { :path => '.' }
   s.source_files = 'FFmpegShim/FFmpegShim.{h,m}'
   s.xcconfig = {
-    'HEADER_SEARCH_PATHS'    => '$(PODS_TARGET_SRCROOT)/FFmpegShim/include',
-    'LIBRARY_SEARCH_PATHS'   => '$(PODS_TARGET_SRCROOT)/FFmpegShim/libs',
+    'HEADER_SEARCH_PATHS'    => '$(SRCROOT)/FFmpegShim/include',
+    'LIBRARY_SEARCH_PATHS'   => '$(SRCROOT)/FFmpegShim/libs',
     'GCC_PREPROCESSOR_DEFINITIONS' => 'HAVE_SYS_QUEUE_H=1'
   }
   s.libraries   = 'avformat', 'avcodec', 'avutil', 'swscale', 'swresample', 'bz2', 'z', 'c'
