@@ -636,9 +636,8 @@ public class LocalMediaPlugin: CAPPlugin, CAPBridgedPlugin, WKURLSchemeHandler, 
                 return nil
             }
             return FFmpegDataSource(endOf: Int64(stream.endOf)) { off, buf, n in
-                let d = stream.read(offset: UInt64(max(0, off)), length: n)
-                if d.isEmpty { return 0 }
-                buf.update(from: (d as NSData).bytes.assumingMemoryBound(to: UInt8.self), count: d.count)
+                guard let d = try? stream.read(offset: UInt64(max(0, off)), length: n), !d.isEmpty else { return 0 }
+                buf.update(from: d, count: d.count)
                 return d.count
             }
         }
@@ -652,7 +651,7 @@ public class LocalMediaPlugin: CAPPlugin, CAPBridgedPlugin, WKURLSchemeHandler, 
                 _ = try? fh.seek(toFileOffset: UInt64(max(0, off)))
                 let d = (try? fh.readData(ofLength: n)) ?? Data()
                 if d.isEmpty { return 0 }
-                buf.update(from: (d as NSData).bytes.assumingMemoryBound(to: UInt8.self), count: d.count)
+                buf.update(from: d, count: d.count)
                 return d.count
             }
         }

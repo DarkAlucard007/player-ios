@@ -108,7 +108,7 @@ final class FFmpegPlayer {
         let base = CVPixelBufferGetBaseAddress(pb)!.assumingMemoryBound(to: UInt8.self)
         base.update(from: bgraBuf, count: bgraBuf.count)
         CVPixelBufferUnlockBaseAddress(pb, [])
-        if let sb = ff_player_make_cmsample(pb, pts, 1.0 / 30.0) {
+        if let sb = ff_player_make_cmsample(pb, pts, 1.0 / 30.0)?.takeRetainedValue() {
             displayLayer.enqueue(sb)
         }
         MainActor.assumeIsolated { onTime?(pts) }
