@@ -1,8 +1,6 @@
 // FFmpegShim.m — FFmpeg C API 实现 demux + 软解 + swscale/swresample，封装成对 Swift 友好的简单 API。
 // 用 struct 标签 + 直接 streams[] 访问 + 手动宏兜底，不依赖 typedef/新 API 是否可见。
 #import "FFmpegShim.h"
-#import <CoreMedia/CoreMedia.h>
-#import <CoreVideo/CoreVideo.h>
 #include <libavutil/avutil.h>
 #include <libavutil/opt.h>
 #include <libavutil/imgutils.h>
@@ -207,13 +205,4 @@ void ff_player_seek(FFPlayer *p, double seconds) {
     if (p->vdec) avcodec_flush_buffers(p->vdec);
     if (p->adec) avcodec_flush_buffers(p->adec);
     p->curOffset = 0;
-}
-CMSampleBufferRef ff_player_make_cmsample(CVPixelBufferRef pb, double pts, double dur) {
-    CMSampleTimingInfo timing;
-    timing.duration = CMTimeMakeScale((int64_t)(dur * 90000), 90000);
-    timing.presentationTimeStamp = CMTimeMakeScale((int64_t)(pts * 90000), 90000);
-    timing.decodeTimeStamp = kCMTimeInvalid;
-    CMSampleBufferRef sb = NULL;
-    OSStatus st = CMSampleBufferCreateForImageBuffer(NULL, pb, true, NULL, NULL, NULL, &timing, &sb);
-    return st == noErr ? sb : NULL;
 }

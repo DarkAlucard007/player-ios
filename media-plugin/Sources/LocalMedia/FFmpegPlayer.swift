@@ -108,9 +108,15 @@ final class FFmpegPlayer {
         let base = CVPixelBufferGetBaseAddress(pb)!.assumingMemoryBound(to: UInt8.self)
         base.update(from: bgraBuf, count: bgraBuf.count)
         CVPixelBufferUnlockBaseAddress(pb, [])
-        if let sb = ff_player_make_cmsample(pb, pts, 1.0 / 30.0)?.takeRetainedValue() {
-            displayLayer.enqueue(sb)
-        }
+        let timing = CMSampleTimingInfo(duration: CMTime(value: 3000, timescale: 90000),
+                                        presentationTimeStamp: CMTime(value: Int64(pts * 90000), timescale: 90000),
+                                        decodeTimeStamp: .invalid)
+        var sb: CMSampleBuffer?
+        let st = CMSampleBufferCreateForImageBuffer(allocator: nil, imageBuffer: pb, dataReady: true,
+                                                    makeDataReadyCallback: nil, refcon: nil,
+                                                    formatDescription: nil, sampleTiming: timing,
+                                                    sampleBufferOut: &sb)
+        if st == noErr, let sb { displayLayer.enqueue(sb) }
         MainActor.assumeIsolated { onTime?(pts) }
     }
 

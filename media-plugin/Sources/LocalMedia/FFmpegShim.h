@@ -1,10 +1,9 @@
 // FFmpegShim.h — 干净的对 Swift 友好的 C 播放引擎 API。
 // 所有 FFmpeg C API 的繁琐交互（宏、accessor、指针类型）都封装在 FFmpegShim.m 里，
-// Swift 侧只调这些简单函数，不直接 import FFmpeg 头。
+// Swift 侧只调这些简单函数，不直接 import FFmpeg 头。CMSampleBuffer 在 Swift 侧创建。
 #ifndef FFMPEG_SHIM_H
 #define FFMPEG_SHIM_H
 #include <stdint.h>
-#include <CoreMedia/CoreMedia.h>
 
 // 读字节回调：从 offset 读最多 size 字节到 buf，返回实际读取字节数（EOF 返回 0）。
 typedef int (*ff_read_fn)(void *opaque, int64_t offset, uint8_t *buf, int size);
@@ -26,8 +25,6 @@ int ff_player_next(FFPlayer *p);
 double ff_player_video_bgra(FFPlayer *p, uint8_t *out, int outCap);
 // 取当前音频帧重采样为 float 立体声 48k，分别拷到 outL/outR（各 outCap 样本），返回每声道样本数。
 int ff_player_audio_float(FFPlayer *p, float *outL, float *outR, int outCap);
-// 用 CVPixelBuffer 造一个 CMSampleBuffer（dataAsBytes，采样缓冲持有像素缓冲），pts/dur 单位秒。
-CMSampleBufferRef ff_player_make_cmsample(CVPixelBufferRef pb, double pts, double dur);
 
 // 跳到 seconds 秒。
 void ff_player_seek(FFPlayer *p, double seconds);
