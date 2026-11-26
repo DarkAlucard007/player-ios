@@ -2,7 +2,6 @@ import UIKit
 import AVFoundation
 import CoreMedia
 import CoreVideo
-import FFmpegShim
 
 /// 纯原生全屏播放 UI（FFmpeg 解码，用于 MKV/AVI/FLV 等 <video> 不支持的容器）。
 final class FFmpegPlayerViewController: UIViewController {
