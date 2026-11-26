@@ -238,6 +238,16 @@ jobs:
             exit 1
           fi
 
+      - name: 诊断 FFmpegShim 头文件搜索路径
+        working-directory: ios/App
+        run: |
+          echo "=== ffmpeg include 实际位置 ==="
+          ls -d ../../media-plugin/ffmpeg/include
+          ls ../../media-plugin/ffmpeg/include/libavutil/avutil.h
+          echo "=== CocoaPods 生成的 FFmpegShim xcconfig ==="
+          find "Pods/Target Support Files" -iname "*FFmpegShim*xcconfig" -exec cat {} \;
+          echo "=== grep HEADER_SEARCH_PATHS (ffmpeg) ==="
+          grep -rn "HEADER_SEARCH_PATHS" "Pods/Target Support Files/" 2>/dev/null | grep -i ffmpeg
       - name: 校验插件已被 CocoaPods 集成
         if: ${{ hashFiles('media-plugin/LocalMedia.podspec') != '' }}
         working-directory: ios/App
