@@ -325,7 +325,7 @@ final class SMB2Connection {
     private func header(_ cmd: UInt8, id: UInt64, sign: Bool) -> [UInt8] {
         var h = [UInt8](repeating: 0, count: 64)
         func put(_ bytes: [UInt8], _ off: Int) { for i in 0..<bytes.count { h[off + i] = bytes[i] } }
-        put(B.le32(0xFE534D42), 0)
+        put([0xFE, 0x53, 0x4D, 0x42], 0)
         put(B.le16(64), 4)
         put(B.le16(0), 6)
         put(B.le32(0), 8)
