@@ -166,7 +166,7 @@ double ff_player_video_bgra(FFPlayer *p, uint8_t *out, int outCap) {
     int w = ff_player_video_w(p), h = ff_player_video_h(p);
     if (w <= 0 || h <= 0) return -1;
     if (!p->sws) {
-        p->sws = sws_getContext(w, h, (enum AVPixelFormat)f->format, w, h, AV_PIX_FMT_BGRA, SWS_BILINEAR, NULL, NULL, NULL);
+        p->sws = sws_getContext(w, h, f->format, w, h, AV_PIX_FMT_BGRA, SWS_BILINEAR, NULL, NULL, NULL);
         if (!p->sws) return -2;
     }
     int dstStride = w * 4;
@@ -181,13 +181,12 @@ int ff_player_audio_float(FFPlayer *p, float *outL, float *outR, int outCap) {
     struct AVFrame *f = p->frame;
     if (!p || !p->adec || !f || !outL || !outR) return 0;
     if (!p->swr) {
-        enum AVSampleFormat inFmt = (enum AVSampleFormat)f->format;
         int inRate = p->adec->sample_rate;
         AVChannelLayout inLay, outLay;
         int inCh = p->adec->ch_layout.nb_channels > 0 ? (int)p->adec->ch_layout.nb_channels : p->adec->channels;
         av_channel_layout_default(&inLay, inCh > 0 ? inCh : 2);
         av_channel_layout_default(&outLay, 2);
-        p->swr = swr_alloc_set_opts2(&outLay, AV_SAMPLE_FMT_FLTP, 48000, &inLay, inFmt, inRate, 0, NULL);
+        p->swr = swr_alloc_set_opts2(&outLay, AV_SAMPLE_FMT_FLTP, 48000, &inLay, f->format, inRate, 0, NULL);
         av_channel_layout_uninit(&inLay);
         av_channel_layout_uninit(&outLay);
         if (!p->swr || swr_init(p->swr) < 0) return 0;
