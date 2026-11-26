@@ -13,6 +13,22 @@
 #include <libswresample/swresample.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdarg.h>
+
+static void (*s_fflog_fn)(const char *) = NULL;
+void ff_set_log(void (*fn)(const char *)) { s_fflog_fn = fn; }
+void fflog(const char *fmt, ...) {
+    if (!s_fflog_fn) return;
+    char buf[1024];
+    va_list ap; va_start(ap, fmt);
+    vsnprintf(buf, sizeof buf, fmt, ap);
+    va_end(ap);
+    s_fflog_fn(buf);
+}
+static void fflog_err(const char *what, int rc) {
+    char buf[64]; av_strerror(rc, buf, sizeof buf);
+    fflog("%s 失败 rc=%d (%s)", what, rc, buf);
+}
 
 #ifndef AVSEEK_SET
 #define AVSEEK_SET 0
@@ -100,37 +116,45 @@ void ff_player_free(FFPlayer *p) {
 }
 int ff_player_open(FFPlayer *p) {
     if (!p) return -1;
+    fflog("ff_player_open 开始 endOf=%lld reader=%s", (long long)p->endOf, p->reader ? "有" : "无");
     p->io = avio_alloc_context(p->ioBuf, p->ioBufSize, 0, p, ff_read_cb, NULL, ff_seek_cb);
-    if (!p->io) return -2;
+    if (!p->io) { fflog("avio_alloc_context 失败"); return -2; }
     p->fmt = avformat_alloc_context();
-    if (!p->fmt) return -3;
+    if (!p->fmt) { fflog("avformat_alloc_context 失败"); return -3; }
     p->fmt->pb = p->io;
     int rc = avformat_open_input(&p->fmt, "", NULL, NULL);
-    if (rc < 0) { p->fmt->pb = NULL; return rc; }
+    if (rc < 0) { p->fmt->pb = NULL; fflog_err("avformat_open_input", rc); return rc; }
+    fflog("avformat_open_input 成功 格式=%s 流数=%d", p->fmt->iformat ? p->fmt->iformat->name : "?", p->fmt->nb_streams);
     rc = avformat_find_stream_info(p->fmt, NULL);
-    if (rc < 0) return rc;
+    if (rc < 0) { fflog_err("avformat_find_stream_info", rc); return rc; }
     int64_t dur = p->fmt->duration;
     p->duration = dur > 0 ? dur / 1000000.0 : 0;
+    fflog("find_stream_info 成功 duration=%.2f 秒", p->duration);
     p->vidx = av_find_best_stream(p->fmt, AVMEDIA_TYPE_VIDEO, -1, -1, &p->vdec, 0);
     p->aidx = av_find_best_stream(p->fmt, AVMEDIA_TYPE_AUDIO, -1, -1, &p->adec, 0);
-    if (p->vidx < 0 || !p->vdec) return -10;
+    fflog("av_find_best_stream 视频流=%d 音频流=%d", p->vidx, p->aidx);
+    if (p->vidx < 0 || !p->vdec) { fflog("无可用视频流"); return -10; }
     p->pkt = av_packet_alloc();
     p->frame = av_frame_alloc();
     struct AVStream *vs = vid_stream(p);
     if (vs && vs->codecpar) {
+        fflog("视频 codec_id=%d", (int)vs->codecpar->codec_id);
         const struct AVCodec *vc = avcodec_find_decoder(vs->codecpar->codec_id);
-        if (!vc) return -11;
+        if (!vc) { fflog("avcodec_find_decoder(视频) 找不到解码器"); return -11; }
         rc = avcodec_open2(p->vdec, vc, NULL);
-        if (rc < 0) return rc;
+        if (rc < 0) { fflog_err("avcodec_open2(视频)", rc); return rc; }
+        fflog("视频解码器已打开 %dx%d", p->vdec->width, p->vdec->height);
         p->vtb = vs->time_base;
     }
     if (p->aidx >= 0 && p->adec) {
         struct AVStream *as = aud_stream(p);
         if (as && as->codecpar) {
             const struct AVCodec *ac = avcodec_find_decoder(as->codecpar->codec_id);
-            if (ac) avcodec_open2(p->adec, ac, NULL);
+            if (ac) { avcodec_open2(p->adec, ac, NULL); fflog("音频解码器已打开"); }
+            else fflog("avcodec_find_decoder(音频) 找不到解码器");
         }
     }
+    fflog("ff_player_open 完成");
     return 0;
 }
 double ff_player_duration(FFPlayer *p) { return p ? p->duration : 0; }

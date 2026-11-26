@@ -47,6 +47,8 @@ interface LocalMediaPluginInterface {
   connectSMB(options: { host: string; port: string; share: string }): Promise<{ ok: boolean; name?: string }>;
   // v1.1.31：FFmpeg 原生播放（url 可为 smb2:<key> / localmedia:///<name> / http(s)://…）
   playNative(options: { url: string; title?: string; subs?: { url: string }[]; nextUrl?: string; nextTitle?: string }): Promise<{ ok: boolean }>;
+  // v1.1.33：前端写调试日志
+  writeDebug(options: { msg: string }): Promise<void>;
 }
 
 export const LocalMedia = registerPlugin<LocalMediaPluginInterface>('LocalMedia');
@@ -87,6 +89,14 @@ export async function playNative(opts: { url: string; title?: string; subs?: { u
     console.warn('playNative 失败', e);
     throw e;
   }
+}
+
+/** v1.1.33：把一行调试信息写入原生 app-debug.log（排查播放路由/FFmpeg 链路）。浏览器模式静默跳过。 */
+export async function writeDebug(msg: string): Promise<void> {
+  if (!isNative) return;
+  try {
+    await LocalMedia.writeDebug({ msg });
+  } catch { /* 日志失败不影响播放 */ }
 }
 
 export interface SMBBrowseResult {

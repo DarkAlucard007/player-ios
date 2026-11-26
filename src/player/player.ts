@@ -2,7 +2,7 @@
 
 import { state, saveRecord, setSettings, addToPlaylist } from '../core/store';
 import { fmtTime, escapeHtml, extOf, titleOfKey } from '../core/util';
-import { captureFrame, saveImageToPhotos, pickMedia, readTextFile, localUrl, setOrientation, listSMBDir, needsNativePlayer, playNative, type ScreenOrientation } from '../native/localMedia';
+import { captureFrame, saveImageToPhotos, pickMedia, readTextFile, localUrl, setOrientation, listSMBDir, needsNativePlayer, playNative, writeDebug, type ScreenOrientation } from '../native/localMedia';
 import { parseSubtitle, cueAt, type Cue } from './subtitles';
 import { EQ, EQ_BAND_LABELS } from './eq';
 import { resolvePlayback, findMatchingSubtitle } from '../sources/registry';
@@ -44,7 +44,9 @@ export function openPlayer(key: string, context?: string[]): void {
   }
   // v1.1.31：非 MP4/MOV/M4V 容器 → 原生 FFmpeg 播放器（<video>/AVFoundation 解不动 MKV 等）
   const nameForExt = resolved.localName ?? resolved.smbName ?? resolved.title ?? titleOfKey(key);
-  if (needsNativePlayer(nameForExt)) {
+  const needsNative = needsNativePlayer(nameForExt);
+  writeDebug(`openPlayer key=${key} resolved=${resolved ? 'yes' : 'no'} nameForExt=${nameForExt} needsNative=${needsNative} url=${resolved.url}`);
+  if (needsNative) {
     const nativeUrl = key.startsWith('smb2:') ? key : resolved.url; // makeFFSource 认 smb2:<key>
     const subName = findMatchingSubtitle(resolved.localName ?? '');
     const subUrl = subName ? localUrl(subName) : null;

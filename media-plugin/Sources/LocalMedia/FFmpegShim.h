@@ -10,6 +10,10 @@ typedef int (*ff_read_fn)(void *opaque, int64_t offset, uint8_t *buf, int size);
 
 typedef struct FFPlayer FFPlayer;
 
+// 日志钩子：LocalMediaPlugin 注册一个回调，C 侧所有 fflog() 都转发到调试日志文件。
+void ff_set_log(void (*fn)(const char *));
+void fflog(const char *fmt, ...);
+
 FFPlayer *ff_player_new(int64_t endOf, ff_read_fn reader, void *readerOpaque);
 void ff_player_free(FFPlayer *p);
 

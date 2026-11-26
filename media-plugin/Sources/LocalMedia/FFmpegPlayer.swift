@@ -13,6 +13,11 @@ private func ff_readerBridge(_ opaque: UnsafeMutableRawPointer?, _ offset: Int64
     return Int32(n)
 }
 
+// C 日志桥：把 FFmpegShim.m 里所有 fflog() 转发到调试日志文件
+private func ff_logBridge(_ msg: UnsafePointer<CChar>?) {
+    if let msg { Log.write("[ffmpeg] " + String(cString: msg)) }
+}
+
 /// 从任意 (offset,length) 读字节的源——由 LocalMediaPlugin 依据 localmedia:// / smb2: / 本地文件提供。
 final class FFmpegDataSource {
     let endOf: Int64
@@ -37,18 +42,24 @@ final class FFmpegPlayer {
     private(set) var videoWidth = 0
     private(set) var videoHeight = 0
     private var bgraBuf: [UInt8]
+    private var renderedFrames = 0
 
     var onReady: (() -> Void)?
     var onTime: ((Double) -> Void)?
     var onEnd: (() -> Void)?
     var onError: ((String) -> Void)?
 
-    init() { bgraBuf = [] }
+    init() {
+        bgraBuf = []
+        ff_set_log(ff_logBridge)
+        Log.write("ffmpeg 播放引擎初始化（日志钩子已注册）")
+    }
 
     var display: CALayer { displayLayer }
     var paused: Bool { isPaused }
 
     func open(source: FFmpegDataSource) {
+        Log.write("ffmpeg open 开始 endOf=\(source.endOf)")
         decodeQueue.async { [weak self] in self?.openInternal(source: source) }
     }
 
@@ -62,6 +73,7 @@ final class FFmpegPlayer {
         videoWidth = Int(ff_player_video_w(player))
         videoHeight = Int(ff_player_video_h(player))
         bgraBuf = [UInt8](repeating: 0, count: videoWidth * videoHeight * 4)
+        Log.write("ffmpeg open 完成 duration=\(String(format: "%.2f", duration)) 视频=\(videoWidth)x\(videoHeight) 缓冲=\(bgraBuf.count)B")
         configureAudioEngine()
         displayLayer.contentsGravity = .resizeAspect
         MainActor.assumeIsolated { onReady?() }
@@ -96,14 +108,21 @@ final class FFmpegPlayer {
     }
 
     private func renderVideo() {
+        renderedFrames += 1
         var pb: CVPixelBuffer?
         let st = CVPixelBufferCreate(nil, videoWidth, videoHeight, kCVPixelFormatType_32BGRA,
                                      [kCVPixelBufferIOSurfacePropertiesKey: [:]] as CFDictionary, &pb)
-        guard st == kCVReturnSuccess, let pb else { return }
+        guard st == kCVReturnSuccess, let pb else {
+            if renderedFrames <= 3 { Log.write("ffmpeg renderVideo CVPixelBufferCreate 失败 st=\(st)") }
+            return
+        }
         let pts = bgraBuf.withUnsafeMutableBytes { ptr in
             ff_player_video_bgra(player, ptr.baseAddress!.assumingMemoryBound(to: UInt8.self), Int32(bgraBuf.count))
         }
-        guard pts >= 0 else { return }
+        guard pts >= 0 else {
+            if renderedFrames <= 3 { Log.write("ffmpeg renderVideo 解码失败 pts<0（第 \(renderedFrames) 帧）") }
+            return
+        }
         CVPixelBufferLockBaseAddress(pb, [])
         let base = CVPixelBufferGetBaseAddress(pb)!.assumingMemoryBound(to: UInt8.self)
         base.update(from: bgraBuf, count: bgraBuf.count)
@@ -115,6 +134,9 @@ final class FFmpegPlayer {
                                  bytesPerRow: videoWidth * 4, space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: info,
                                  provider: provider, decode: nil, shouldInterpolate: false, intent: .defaultIntent) {
                 displayLayer.contents = img
+                if renderedFrames == 1 { Log.write("ffmpeg 第 1 帧已渲染到画面 pts=\(String(format: "%.3f", pts))") }
+            } else if renderedFrames <= 3 {
+                Log.write("ffmpeg CGImage 创建失败（第 \(renderedFrames) 帧）")
             }
         }
         MainActor.assumeIsolated { onTime?(pts) }

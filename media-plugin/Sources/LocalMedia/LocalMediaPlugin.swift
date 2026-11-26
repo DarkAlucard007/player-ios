@@ -54,7 +54,9 @@ public class LocalMediaPlugin: CAPPlugin, CAPBridgedPlugin, WKURLSchemeHandler, 
         // v1.1.27：系统选择器授权一次拿到 NAS 共享根（LiveFiles 安全作用域），目录树在其上遍历
         CAPPluginMethod(name: "connectSMB", returnType: CAPPluginReturnPromise),
         // v1.1.31：FFmpeg 原生播放（MKV/AVI/FLV 等 <video> 不支持的容器）
-        CAPPluginMethod(name: "playNative", returnType: CAPPluginReturnPromise)
+        CAPPluginMethod(name: "playNative", returnType: CAPPluginReturnPromise),
+        // v1.1.33：前端写调试日志（排查播放路由决策）
+        CAPPluginMethod(name: "writeDebug", returnType: CAPPluginReturnPromise)
     ]
 
     // MARK: - 调试日志（同步写文件：闪退后日志依然存活，供 App 内查看/复制）
@@ -629,12 +631,14 @@ public class LocalMediaPlugin: CAPPlugin, CAPBridgedPlugin, WKURLSchemeHandler, 
 
     /// 依据 URL 构造 FFmpegDataSource（smb2: / localmedia:// / file://）
     private func makeFFSource(url: String) -> FFmpegDataSource? {
+        Log.write("makeFFSource 开始 url=\(url)")
         if url.hasPrefix("smb2:") {
             let key = url
             guard let stream = Self.smb2Streams[key] else {
                 Log.write("playNative smb2 流不存在: \(key)")
                 return nil
             }
+            Log.write("makeFFSource smb2 流命中 endOf=\(stream.endOf)")
             return FFmpegDataSource(endOf: Int64(stream.endOf)) { off, buf, n in
                 guard let d = try? stream.read(offset: UInt64(max(0, off)), length: n), !d.isEmpty else { return 0 }
                 buf.update(from: d, count: d.count)
@@ -645,8 +649,12 @@ public class LocalMediaPlugin: CAPPlugin, CAPBridgedPlugin, WKURLSchemeHandler, 
             let raw = url.hasPrefix("localmedia:///") ? String(url.dropFirst("localmedia:///".count)) : String(url.dropFirst("file://".count))
             let decoded = raw.removingPercentEncoding ?? raw
             let path = url.hasPrefix("localmedia:///") ? mediaDir.appendingPathComponent(decoded) : URL(fileURLWithPath: decoded)
-            guard let fh = try? FileHandle(forReadingFrom: path) else { return nil }
+            guard let fh = try? FileHandle(forReadingFrom: path) else {
+                Log.write("makeFFSource 打开文件失败 path=\(path.path)")
+                return nil
+            }
             let size = (try? fh.seekToEnd()) ?? 0
+            Log.write("makeFFSource 本地/LiveFiles 文件打开成功 path=\(path.path) size=\(size)")
             return FFmpegDataSource(endOf: Int64(size)) { off, buf, n in
                 _ = try? fh.seek(toFileOffset: UInt64(max(0, off)))
                 let d = (try? fh.readData(ofLength: n)) ?? Data()
@@ -655,12 +663,14 @@ public class LocalMediaPlugin: CAPPlugin, CAPBridgedPlugin, WKURLSchemeHandler, 
                 return d.count
             }
         }
+        Log.write("makeFFSource 未知 url 前缀: \(url)")
         return nil
     }
 
     @objc func playNative(_ call: CAPPluginCall) {
-        guard let url = call.getString("url") else { call.reject("no url"); return }
+        guard let url = call.getString("url") else { Log.write("playNative 缺少 url 参数"); call.reject("no url"); return }
         let title = call.getString("title") ?? url
+        Log.write("playNative 开始 url=\(url) title=\(title)")
         var subs: [FFmpegDataSource] = []
         if let arr = call.options["subs"] as? [[String: Any]] {
             for s in arr { if let su = s["url"] as? String, let d = makeFFSource(url: su) { subs.append(d) } }
@@ -679,6 +689,12 @@ public class LocalMediaPlugin: CAPPlugin, CAPBridgedPlugin, WKURLSchemeHandler, 
         guard let anchor = presentingAnchor() else { call.reject("no anchor to present"); return }
         anchor.present(vc, animated: true)
         Log.write("playNative 打开 \(title)")
+        call.resolve([:])
+    }
+
+    @objc func writeDebug(_ call: CAPPluginCall) {
+        let msg = call.getString("msg") ?? ""
+        Log.write("前端: \(msg)")
         call.resolve([:])
     }
 

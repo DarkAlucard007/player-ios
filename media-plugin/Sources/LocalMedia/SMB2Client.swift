@@ -325,23 +325,22 @@ final class SMB2Connection {
     private func header(_ cmd: UInt8, id: UInt64, sign: Bool) -> [UInt8] {
         var h = [UInt8](repeating: 0, count: 64)
         func put(_ bytes: [UInt8], _ off: Int) { for i in 0..<bytes.count { h[off + i] = bytes[i] } }
-        put([0xFE, 0x53, 0x4D, 0x42], 0)
-        put(B.le16(64), 4)
-        put(B.le16(0), 6)
-        put(B.le32(0), 8)
-        h[12] = cmd
-        h[13] = 1
-        put(sign ? B.le32(0x00000008) : B.le32(0), 14)
-        put(B.le32(0), 18)
-        put(B.le64(id), 22)
-        put(B.le32(0), 30)
-        put(B.le32(treeId), 34)
-        put(B.le64(sessionId), 38)
+        put([0xFE, 0x53, 0x4D, 0x42], 0)      // ProtocolId [0-3]
+        put(B.le16(64), 4)                     // StructureSize [4-5] = 64
+        h[6] = cmd                             // Command [6]
+        h[7] = 0                               // CreditCharge [7]
+        put(B.le32(sign ? 0x00000008 : 0), 8)  // Flags [8-11]（SIGNED 位 0x08）
+        put(B.le32(0), 12)                     // NextCommand [12-15] = 0（无链式命令）
+        put(B.le64(id), 16)                    // MessageId [16-23]
+        put(B.le32(0), 24)                     // Reserved [24-31]（后 4 字节保持 0）
+        put(B.le32(treeId), 32)                // TreeId [32-35]
+        put(B.le64(sessionId), 36)             // SessionId [36-43]
+        // Signature [44-63] = 0（rpc 签名时填充 [44-59]）
         return h
     }
     private func signMsg(_ data: [UInt8]) -> [UInt8] {
         var d = data
-        for i in 46..<62 { d[i] = 0 }
+        for i in 44..<64 { d[i] = 0 } // 签名域 [44-63] 清零后再哈希
         if dialect == 0x0210 || dialect == 0x0202 || dialect == 0x0203 {
             return Array(NTLM.hmacSHA256(sessionKey, Data(d)).prefix(16))
         }
@@ -349,10 +348,10 @@ final class SMB2Connection {
     }
     private func receive() throws -> [UInt8] {
         let head = try readExactly(64)
-        let cmd = head[12]
+        let cmd = head[6]
         let status = B.u32(head, 8)
-        lastTreeId = B.u32(head, 34)
-        lastSessionId = B.u64(head, 38)
+        lastTreeId = B.u32(head, 32)
+        lastSessionId = B.u64(head, 36)
         var msg = head
         switch cmd {
         case Self.opRead:
@@ -396,11 +395,12 @@ final class SMB2Connection {
     private func rpc(_ cmd: UInt8, _ body: [UInt8], sign: Bool) throws -> [UInt8] {
         msgId &+= 1
         var msg = header(cmd, id: msgId, sign: sign && requireSigning) + body
-        if sign && requireSigning { let sig = signMsg(msg); for i in 0..<16 { msg[46 + i] = sig[i] } }
+        if sign && requireSigning { let sig = signMsg(msg); for i in 0..<16 { msg[44 + i] = sig[i] } }
         try sendRaw(msg)
         let resp = try receive()
-        if requireSigning && B.u32(resp, 14) != 0 {
-            if Array(resp[46..<62]) != signMsg(resp) { throw smbErr(-6, "signature mismatch") }
+        if requireSigning {
+            let rSig = Array(resp[44..<60])
+            if rSig.contains(where: { $0 != 0 }) && rSig != signMsg(resp) { throw smbErr(-6, "signature mismatch") }
         }
         let status = B.u32(resp, 8)
         if status != 0 && status != 0xC0000016 {
@@ -423,11 +423,13 @@ final class SMB2Connection {
         msgId = 1
         try sendRaw(msg)
         let resp = try receive()
-        let ss = Int(B.u16(resp, 0))
-        dialect = B.u16(resp, 2)
-        requireSigning = (B.u16(resp, 4) & 0x0002) != 0
-        maxReadSize = ss == 66 ? Int(B.u32(resp, 43)) : Int(B.u32(resp, 16))
+        // 响应 = 头(64B) + 体；体偏移：StructureSize 在头[4]，Dialect 在体[2]=resp[66]，SecurityMode 在体[4]=resp[68]，MaxReadSize 在体[16]=resp[80]
+        let ss = Int(B.u16(resp, 4))
+        dialect = B.u16(resp, 66)
+        requireSigning = (B.u16(resp, 68) & 0x0002) != 0
+        maxReadSize = ss == 66 ? Int(B.u32(resp, 80)) : Int(B.u16(resp, 80))
         if maxReadSize == 0 { maxReadSize = 64 * 1024 }
+        Log.write("smb2 NEGOTIATE 完成 dialect=0x\(String(dialect, radix: 16)) requireSigning=\(requireSigning) maxReadSize=\(maxReadSize)")
     }
     private func sessionSetup() throws {
         var guest = B.le16(25) + [0x00] + [0x00] + B.le32(0) + B.le32(0)
