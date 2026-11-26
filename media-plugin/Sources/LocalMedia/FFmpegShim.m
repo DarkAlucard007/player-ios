@@ -182,13 +182,10 @@ int ff_player_audio_float(FFPlayer *p, float *outL, float *outR, int outCap) {
     if (!p || !p->adec || !f || !outL || !outR) return 0;
     if (!p->swr) {
         int inRate = p->adec->sample_rate;
-        AVChannelLayout inLay, outLay;
         int inCh = p->adec->ch_layout.nb_channels > 0 ? (int)p->adec->ch_layout.nb_channels : p->adec->channels;
-        av_channel_layout_default(&inLay, inCh > 0 ? inCh : 2);
-        av_channel_layout_default(&outLay, 2);
-        p->swr = swr_alloc_set_opts2(&outLay, AV_SAMPLE_FMT_FLTP, 48000, &inLay, f->format, inRate, 0, NULL);
-        av_channel_layout_uninit(&inLay);
-        av_channel_layout_uninit(&outLay);
+        int64_t inLayout = (inCh <= 1) ? (int64_t)0x4 : (int64_t)0xC; // MONO=FL(0x4), STEREO=FL|FR(0xC)
+        p->swr = swr_alloc_set_opts(NULL, (int64_t)0xC, AV_SAMPLE_FMT_FLTP, 48000,
+                                    inLayout, f->format, inRate, 0, NULL);
         if (!p->swr || swr_init(p->swr) < 0) return 0;
     }
     uint8_t *planes[2] = { (uint8_t *)outL, (uint8_t *)outR };
