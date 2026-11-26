@@ -174,7 +174,7 @@ jobs:
              --target-os=ios \
              --arch=arm64 \
              --enable-cross-compile \
-            --cc=clang \
+             --cc="clang -arch arm64 -isysroot $SYSROOT" \
             --enable-static --disable-shared \
             --disable-doc --disable-ffplay --disable-ffprobe \
             --enable-swscale --enable-swresample \
