@@ -8,8 +8,7 @@ Pod::Spec.new do |s|
   s.author       = { 'Alucard' => 'endtime@163.com' }
   s.platform     = :ios, '14.0'
   s.source       = { :path => '.' }
-  s.source_files = 'FFmpegShim/**/*.{h,m}'
-  s.module_map   = 'FFmpegShim/module.modulemap'
+  s.source_files = 'FFmpegShim/FFmpegShim.h'
   s.xcconfig = {
     'HEADER_SEARCH_PATHS'    => '$(PODS_TARGET_SRCROOT)/../ffmpeg/include',
     'LIBRARY_SEARCH_PATHS'   => '$(PODS_TARGET_SRCROOT)/../ffmpeg/lib',

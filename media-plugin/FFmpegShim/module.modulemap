@@ -1,4 +1,0 @@
-module FFmpegShim {
-    header "FFmpegShim.h"
-    export *
-}
