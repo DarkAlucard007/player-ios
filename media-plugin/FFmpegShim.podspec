@@ -9,7 +9,7 @@ Pod::Spec.new do |s|
   s.platform     = :ios, '14.0'
   s.source       = { :path => '.' }
   s.source_files = 'FFmpegShim/FFmpegShim.{h,m}'
-  s.xcconfig = {
+  s.pod_target_xcconfig = {
     'HEADER_SEARCH_PATHS'    => '$(SRCROOT)/FFmpegShim/include',
     'LIBRARY_SEARCH_PATHS'   => '$(SRCROOT)/FFmpegShim/libs',
     'GCC_PREPROCESSOR_DEFINITIONS' => 'HAVE_SYS_QUEUE_H=1'
