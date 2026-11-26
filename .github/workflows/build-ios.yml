@@ -182,7 +182,6 @@ jobs:
             --enable-static --disable-shared \
             --disable-doc --disable-ffplay --disable-ffprobe \
             --enable-swscale --enable-swresample \
-            --extra-libs="-lCoreMedia -lVideoToolbox -lCoreVideo -lCoreFoundation -lAudioToolbox" \
             > /tmp/ffmpeg-configure.log 2>&1 || { echo "=== configure tail ==="; tail -n 25 /tmp/ffmpeg-configure.log; echo "=== config.log test.c region ==="; grep -n -B2 -A10 "test.c" ffbuild/config.log 2>/dev/null | head -50; echo "=== config.log tail ==="; tail -n 40 ffbuild/config.log 2>/dev/null; exit 1; }
           make -j4 > /tmp/ffmpeg-make.log 2>&1 || { tail -n 40 /tmp/ffmpeg-make.log; exit 1; }
           make install > /tmp/ffmpeg-install.log 2>&1 || { tail -n 40 /tmp/ffmpeg-install.log; exit 1; }
