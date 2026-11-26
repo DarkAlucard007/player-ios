@@ -194,12 +194,12 @@ jobs:
            ls media-plugin/FFmpegShim/libs/*.a
           echo "FFmpeg built and installed to media-plugin/ffmpeg"
 
-      - name: FFmpegShim 搜索路径改绝对路径（绕开 pod xcconfig 变量解析不定）
-        if: ${{ hashFiles('media-plugin/FFmpegShim.podspec') != '' }}
+      - name: LocalMedia FFmpeg 搜索路径改绝对路径（FFmpeg 已并入 LocalMedia pod）
+        if: ${{ hashFiles('media-plugin/LocalMedia.podspec') != '' }}
         run: |
-          sed -i '' 's|\$(SRCROOT)/FFmpegShim/include|'"$GITHUB_WORKSPACE"'/media-plugin/FFmpegShim/include|g' media-plugin/FFmpegShim.podspec
-          sed -i '' 's|\$(SRCROOT)/FFmpegShim/libs|'"$GITHUB_WORKSPACE"'/media-plugin/FFmpegShim/libs|g' media-plugin/FFmpegShim.podspec
-          grep -n SEARCH_PATHS media-plugin/FFmpegShim.podspec
+          sed -i '' 's|\$(SRCROOT)/FFmpegShim/include|'"$GITHUB_WORKSPACE"'/media-plugin/FFmpegShim/include|g' media-plugin/LocalMedia.podspec
+          sed -i '' 's|\$(SRCROOT)/FFmpegShim/libs|'"$GITHUB_WORKSPACE"'/media-plugin/FFmpegShim/libs|g' media-plugin/LocalMedia.podspec
+          grep -n SEARCH_PATHS media-plugin/LocalMedia.podspec
 
       # 有本地 pod 插件时才需要
       - name: 注入本地 CocoaPods 插件
@@ -260,16 +260,6 @@ jobs:
           find "Pods/Target Support Files" -iname "*FFmpegShim*xcconfig" -exec cat {} \;
           echo "=== grep HEADER_SEARCH_PATHS (ffmpeg) ==="
           grep -rn "HEADER_SEARCH_PATHS" "Pods/Target Support Files/" 2>/dev/null | grep -i ffmpeg
-      - name: FFmpegShim 诊断（podspec/头文件/生成 xcconfig）
-        run: |
-          echo "=== podspec after sed ==="
-          cat media-plugin/FFmpegShim.podspec
-          echo "=== header at abs path? ==="
-          ls -la "$GITHUB_WORKSPACE/media-plugin/FFmpegShim/include/libavutil/avutil.h" 2>&1 | head -3
-          echo "=== generated FFmpegShim xcconfig ==="
-          find ios/App/Pods -iname "*FFmpegShim*" -name "*.xcconfig" 2>/dev/null | while read f; do echo "--- $f ---"; cat "$f"; done
-          echo "=== grep HEADER_SEARCH in all pod xcconfigs ==="
-          grep -rn "HEADER_SEARCH_PATHS" ios/App/Pods/Target\ Support\ Files/ 2>/dev/null | grep -i ffmpeg | head
       - name: 校验插件已被 CocoaPods 集成
         if: ${{ hashFiles('media-plugin/LocalMedia.podspec') != '' }}
         working-directory: ios/App

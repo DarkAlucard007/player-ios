@@ -21,8 +21,15 @@ DESC
   # LocalMedia.framework/，运行时 Bundle(for:).url(forResource:) 可取到。
   s.resources      = ['Resources/sample.mp4']
   s.dependency 'Capacitor'
-  # v1.1.31：FFmpeg C shim——非 MP4 容器（MKV/AVI/FLV/RMVB/TS…）走原生 FFmpeg 解码播放
-  s.dependency 'FFmpegShim'
+  # v1.1.31：FFmpeg 直接并入 LocalMedia（独立 FFmpegShim pod 的 pod_target_xcconfig 不被应用，头找不到）。
+  # FFmpegShim.h 已移入 Sources/LocalMedia/，FFmpeg C API 成为 LocalMedia 模块一部分；
+  # FFmpeg 头/库由 CI 拷到 media-plugin/FFmpegShim/{include,libs}，搜索路径指向那里。
+  s.pod_target_xcconfig = {
+    'HEADER_SEARCH_PATHS'  => '$(SRCROOT)/FFmpegShim/include',
+    'LIBRARY_SEARCH_PATHS' => '$(SRCROOT)/FFmpegShim/libs'
+  }
+  s.libraries  = 'avformat', 'avcodec', 'avutil', 'swscale', 'swresample', 'bz2', 'z', 'c'
+  s.frameworks = 'CoreMedia', 'VideoToolbox', 'CoreVideo', 'CoreFoundation', 'AudioToolbox', 'AVFoundation'
   s.swift_version  = '5.0'
   # 注意：不要加 static_framework。use_frameworks! 下默认动态 framework 才会被
   # 嵌入 App.app/Frameworks/（校验脚本在那里找符号）；静态链接会进主二进制导致 MISSING SYMBOL

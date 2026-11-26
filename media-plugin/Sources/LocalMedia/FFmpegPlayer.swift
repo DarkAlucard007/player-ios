@@ -2,7 +2,7 @@ import AVFoundation
 import CoreMedia
 import VideoToolbox
 import CoreVideo
-import FFmpegShim
+// FFmpeg C API 经同 pod 的 FFmpegShim.h 暴露（已并入 LocalMedia 模块，无需 import）
 
 // AVERROR(e) 是 C 宏（Swift 不导入宏），手工实现：AVERROR(e) = -(e)
 @inline(__always) private func avErr(_ e: Int32) -> Int32 { -e }
