@@ -272,10 +272,15 @@ final class SMB2Connection {
     init(cfg: Config, share: String) throws {
         self.cfg = cfg
         self.share = share
+        LocalMediaPlugin.Log.write("smb2 连接 \(cfg.host):\(cfg.port) 共享=\(share) 用户=\(cfg.user.isEmpty ? "guest" : cfg.user)")
         try connect()
+        LocalMediaPlugin.Log.write("smb2 TCP 已连接")
         try negotiate()
+        LocalMediaPlugin.Log.write("smb2 NEGOTIATE 完成 dialect=0x\(String(dialect, radix: 16, uppercase: true)) requireSigning=\(requireSigning) maxReadSize=\(maxReadSize)")
         try sessionSetup()
+        LocalMediaPlugin.Log.write("smb2 SESSION_SETUP 完成 sessionId=0x\(String(sessionId, radix: 16))")
         try treeConnect()
+        LocalMediaPlugin.Log.write("smb2 TREE_CONNECT 完成 treeId=\(treeId)")
     }
     func close() { if fd >= 0 { Darwin.close(fd); fd = -1 } }
     deinit { close() }
@@ -418,9 +423,8 @@ final class SMB2Connection {
         if maxReadSize == 0 { maxReadSize = 64 * 1024 }
     }
     private func sessionSetup() throws {
-        var guest = B.le16(25) + B.le16(0) + B.le16(0) + B.le32(0) + B.le32(0)
+        var guest = B.le16(25) + [0x00] + [0x00] + B.le32(0) + B.le32(0)
         guest += B.le16(0) + B.le16(0) + B.le64(0) + [0x00]
-        while guest.count < 32 { guest.append(0) }
         let gr = try rpc(Self.opSessionSetup, guest, sign: false)
         if (B.u16(gr, 2) & 0x0001) != 0 { sessionId = lastSessionId; return }
         let status = B.u32(gr, 0)

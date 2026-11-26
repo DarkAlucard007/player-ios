@@ -85,6 +85,14 @@ public class LocalMediaPlugin: CAPPlugin, CAPBridgedPlugin, WKURLSchemeHandler, 
                 return lines.suffix(n).joined(separator: "\n")
             }
         }
+
+        /// v1.1.29：真正清空日志文件（旧版只追加一行“已清空”标记，文件从未被截断）
+        static func clear() {
+            queue.sync {
+                let marker = "[\(iso.string(from: Date()))] ---- 日志已清空 ----\n"
+                try? marker.write(to: fileURL, atomically: true, encoding: .utf8)
+            }
+        }
     }
 
     // MARK: - 存储
@@ -196,7 +204,7 @@ public class LocalMediaPlugin: CAPPlugin, CAPBridgedPlugin, WKURLSchemeHandler, 
     }
 
     @objc func clearLog(_ call: CAPPluginCall) {
-        Log.write("---- 日志已清空 ----")
+        Log.clear()
         call.resolve(["ok": true])
     }
 
