@@ -26,9 +26,9 @@ DESC
   # FFmpeg 头/库由 CI 拷到 media-plugin/FFmpegShim/{include,libs}，搜索路径指向那里。
   s.pod_target_xcconfig = {
     'HEADER_SEARCH_PATHS'  => '$(SRCROOT)/FFmpegShim/include',
-    'LIBRARY_SEARCH_PATHS' => '$(SRCROOT)/FFmpegShim/libs'
+    'LIBRARY_SEARCH_PATHS' => '$(SRCROOT)/FFmpegShim/libs',
+    'OTHER_LDFLAGS'        => '-lavcodec -lavformat -lavutil -lswscale -lswresample -lbz2 -lz -liconv -lc'
   }
-  s.libraries  = 'avformat', 'avcodec', 'avutil', 'swscale', 'swresample', 'bz2', 'z', 'c', 'iconv'
   s.frameworks = 'CoreMedia', 'VideoToolbox', 'CoreVideo', 'CoreFoundation', 'AudioToolbox', 'AVFoundation'
   s.swift_version  = '5.0'
   # 注意：不要加 static_framework。use_frameworks! 下默认动态 framework 才会被
