@@ -171,6 +171,9 @@ jobs:
             --prefix="$GITHUB_WORKSPACE/media-plugin/ffmpeg" \
             --extra-cflags="-isysroot $SYSROOT -miphoneos-version-min=14.0 -arch arm64" \
             --extra-ldflags="-isysroot $SYSROOT -miphoneos-version-min=14.0 -arch arm64" \
+             --target-os=ios \
+             --arch=arm64 \
+             --enable-cross-compile \
             --cc=clang \
             --enable-static --disable-shared \
             --disable-doc --disable-ffplay --disable-ffprobe \
