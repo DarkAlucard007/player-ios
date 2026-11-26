@@ -651,7 +651,7 @@ public class LocalMediaPlugin: CAPPlugin, CAPBridgedPlugin, WKURLSchemeHandler, 
                 _ = try? fh.seek(toFileOffset: UInt64(max(0, off)))
                 let d = (try? fh.readData(ofLength: n)) ?? Data()
                 if d.isEmpty { return 0 }
-                d.withUnsafeBytes { raw in buf.update(from: raw.baseAddress!, count: d.count) }
+                d.withUnsafeBytes { raw in buf.update(from: raw.assumingMemoryBound(to: UInt8.self), count: d.count) }
                 return d.count
             }
         }
