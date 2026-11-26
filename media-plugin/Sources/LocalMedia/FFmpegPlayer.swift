@@ -107,10 +107,10 @@ final class FFmpegPlayer {
         CVPixelBufferLockBaseAddress(pb, [])
         let base = CVPixelBufferGetBaseAddress(pb)!.assumingMemoryBound(to: UInt8.self)
         base.update(from: bgraBuf, count: bgraBuf.count)
-        CVPixelBufferUnlockBaseAddress(pb, [])
-        if let img = CGImage(pixelBuffer: pb, options: [.noPreserveOrientation], auxiliaryInfo: nil) {
+        if let provider = CGImageProvider(pixelBuffer: pb), let img = CGImage(provider) {
             displayLayer.contents = img
         }
+        CVPixelBufferUnlockBaseAddress(pb, [])
         MainActor.assumeIsolated { onTime?(pts) }
     }
 
