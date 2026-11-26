@@ -157,6 +157,37 @@ jobs:
           print('packageClassList:', verify['packageClassList'])
           PY
 
+      # v1.1.31：编译 FFmpeg（iOS arm64 静态库）——非 MP4 容器（MKV/AVI/FLV/RMVB/TS…）走原生 FFmpeg 播放。
+      # 软解（无 hwaccel）保证兼容；产出 lib/*.a + include/ 供 FFmpegShim pod 引用。
+      - name: 编译 FFmpeg（iOS arm64 静态库）
+        run: |
+          set -e
+          FFVER=n6.1.1
+          curl -fsSL https://ffmpeg.org/releases/ffmpeg-$FFVER.tar.bz2 -o /tmp/ffmpeg.tar.bz2
+          tar xjf /tmp/ffmpeg.tar.bz2 -C /tmp
+          cd /tmp/ffmpeg-$FFVER
+          SYSROOT=$(xcrun --sdk iphoneos --show-sdk-path)
+          ./configure \
+            --prefix="$GITHUB_WORKSPACE/media-plugin/ffmpeg" \
+            --extra-cflags="-isysroot $SYSROOT -miphoneos-version-min=14.0 -arch arm64" \
+            --extra-ldflags="-isysroot $SYSROOT -miphoneos-version-min=14.0 -arch arm64" \
+            --cc=clang \
+            --enable-static --disable-shared \
+            --disable-doc --disable-ffplay --disable-ffprobe \
+            --enable-demuxers=matroska,webm,avi,flv,mpegts,mov,mp4,ogg,asf \
+            --enable-protocols=file,pipe,http,tcp \
+            --enable-decoders=hevc,h264,aac,ac3,eac3,vorbis,opus,vp8,vp9,mp3,flac \
+            --enable-parsers=hevc,h264,aac \
+            --enable-swscale --enable-swresample \
+            --extra-libs="-lCoreMedia -lVideoToolbox -lCoreVideo -lCoreFoundation -lAudioToolbox" \
+            > /tmp/ffmpeg-configure.log 2>&1 || { tail -n 40 /tmp/ffmpeg-configure.log; exit 1; }
+          make -j4 > /tmp/ffmpeg-make.log 2>&1 || { tail -n 40 /tmp/ffmpeg-make.log; exit 1; }
+          make install > /tmp/ffmpeg-install.log 2>&1 || { tail -n 40 /tmp/ffmpeg-install.log; exit 1; }
+          cd "$GITHUB_WORKSPACE"
+          ls -la media-plugin/ffmpeg/lib/*.a
+          ls media-plugin/ffmpeg/include/libavformat/avformat.h
+          echo "FFmpeg built and installed to media-plugin/ffmpeg"
+
       # 有本地 pod 插件时才需要
       - name: 注入本地 CocoaPods 插件
         if: ${{ hashFiles('media-plugin/LocalMedia.podspec') != '' }}

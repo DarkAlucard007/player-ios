@@ -2,7 +2,7 @@
 
 import { state, saveRecord, setSettings, addToPlaylist } from '../core/store';
 import { fmtTime, escapeHtml, extOf, titleOfKey } from '../core/util';
-import { captureFrame, saveImageToPhotos, pickMedia, readTextFile, localUrl, setOrientation, listSMBDir, type ScreenOrientation } from '../native/localMedia';
+import { captureFrame, saveImageToPhotos, pickMedia, readTextFile, localUrl, setOrientation, listSMBDir, needsNativePlayer, playNative, type ScreenOrientation } from '../native/localMedia';
 import { parseSubtitle, cueAt, type Cue } from './subtitles';
 import { EQ, EQ_BAND_LABELS } from './eq';
 import { resolvePlayback, findMatchingSubtitle } from '../sources/registry';
@@ -41,6 +41,19 @@ export function openPlayer(key: string, context?: string[]): void {
   if (!resolved) {
     toast('无法解析播放地址');
     return;
+  }
+  // v1.1.31：非 MP4/MOV/M4V 容器 → 原生 FFmpeg 播放器（<video>/AVFoundation 解不动 MKV 等）
+  const nameForExt = resolved.localName ?? resolved.smbName ?? resolved.title ?? titleOfKey(key);
+  if (needsNativePlayer(nameForExt)) {
+    const nativeUrl = key.startsWith('smb2:') ? key : resolved.url; // makeFFSource 认 smb2:<key>
+    const subName = findMatchingSubtitle(resolved.localName ?? '');
+    const subUrl = subName ? localUrl(subName) : null;
+    playNative({
+      url: nativeUrl,
+      title: titleOfKey(key),
+      subs: subUrl ? [{ url: subUrl }] : undefined
+    }).catch((e) => toast('打开失败 ' + (e && e.message ? e.message : e)));
+    return; // 原生全屏 VC 已呈现，不构建 web 播放层
   }
   const ctx = context && context.length > 0 ? context : [key];
   const index = Math.max(0, ctx.indexOf(key));

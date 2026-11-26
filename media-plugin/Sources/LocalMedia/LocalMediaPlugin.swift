@@ -49,7 +49,9 @@ public class LocalMediaPlugin: CAPPlugin, CAPBridgedPlugin, WKURLSchemeHandler, 
         CAPPluginMethod(name: "deleteSMBItem", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "openSMBFile", returnType: CAPPluginReturnPromise),
         // v1.1.27：系统选择器授权一次拿到 NAS 共享根（LiveFiles 安全作用域），目录树在其上遍历
-        CAPPluginMethod(name: "connectSMB", returnType: CAPPluginReturnPromise)
+        CAPPluginMethod(name: "connectSMB", returnType: CAPPluginReturnPromise),
+        // v1.1.31：FFmpeg 原生播放（MKV/AVI/FLV 等 <video> 不支持的容器）
+        CAPPluginMethod(name: "playNative", returnType: CAPPluginReturnPromise)
     ]
 
     // MARK: - 调试日志（同步写文件：闪退后日志依然存活，供 App 内查看/复制）
@@ -620,6 +622,90 @@ public class LocalMediaPlugin: CAPPlugin, CAPBridgedPlugin, WKURLSchemeHandler, 
         }
     }
 
+    // MARK: - FFmpeg 原生播放（v1.1.31）
+
+    /// 依据 URL 构造 FFmpegDataSource（smb2: / localmedia:// / file://）
+    private func makeFFSource(url: String) -> FFmpegDataSource? {
+        if url.hasPrefix("smb2:") {
+            let key = url
+            guard let stream = Self.smb2Streams[key] else {
+                Log.write("playNative smb2 流不存在: \(key)")
+                return nil
+            }
+            return FFmpegDataSource(endOf: Int64(stream.endOf)) { off, buf, n in
+                let d = stream.read(offset: off, length: n)
+                if d.isEmpty { return 0 }
+                buf?.update(from: (d as NSData).bytes.assumingMemoryBound(to: UInt8.self), count: d.count)
+                return Int32(d.count)
+            }
+        }
+        if url.hasPrefix("localmedia:///") {
+            let name = url.dropFirst("localmedia:///".count)
+            let decoded = String(name).removingPercentEncoding ?? String(name)
+            let path = mediaDir.appendingPathComponent(decoded)
+            guard let fh = try? FileHandle(forReadingFrom: path) else { return nil }
+            let size = (try? fh.seekToEnd()) ?? 0
+            return FFmpegDataSource(endOf: Int64(size)) { off, buf, n in
+                _ = try? fh.seek(toFileOffset: off)
+                let d = (try? fh.readData(ofLength: n)) ?? Data()
+                if d.isEmpty { return 0 }
+                buf?.update(from: (d as NSData).bytes.assumingMemoryBound(to: UInt8.self), count: d.count)
+                return Int32(d.count)
+            }
+        }
+        if url.hasPrefix("file://") {
+            let path = String(url.dropFirst("file://".count)).removingPercentEncoding ?? String(url.dropFirst("file://".count))
+            guard let fh = try? FileHandle(forReadingFrom: URL(fileURLWithPath: path)) else { return nil }
+            let size = (try? fh.seekToEnd()) ?? 0
+            return FFmpegDataSource(endOf: Int64(size)) { off, buf, n in
+                _ = try? fh.seek(toFileOffset: off)
+                let d = (try? fh.readData(ofLength: n)) ?? Data()
+                if d.isEmpty { return 0 }
+                buf?.update(from: (d as NSData).bytes.assumingMemoryBound(to: UInt8.self), count: d.count)
+                return Int32(d.count)
+            }
+        }
+        return nil
+    }
+
+    @objc func playNative(_ call: CAPPluginCall) {
+        guard let url = call.getString("url") else { call.reject("no url"); return }
+        let title = call.getString("title") ?? url
+        var subs: [FFmpegDataSource] = []
+        if let arr = call.options["subs"] as? [[String: Any]] {
+            for s in arr { if let su = s["url"] as? String, let d = makeFFSource(url: su) { subs.append(d) } }
+        }
+        guard let src = makeFFSource(url: url) else {
+            call.reject("无法构造数据源: \(url)")
+            return
+        }
+        let nextUrl = call.getString("nextUrl")
+        let nextTitle = call.getString("nextTitle")
+        let isHttp = url.hasPrefix("http://") || url.hasPrefix("https://")
+        let vc: FFmpegPlayerViewController
+        if isHttp {
+            vc = FFmpegPlayerViewController(directURL: url, title: title, subSources: subs) { [weak self] in
+                guard let self, let nu = nextUrl else { return }
+                let nvc: FFmpegPlayerViewController
+                if nu.hasPrefix("http") { nvc = FFmpegPlayerViewController(directURL: nu, title: nextTitle ?? nu) }
+                else if let nd = self.makeFFSource(url: nu) { nvc = FFmpegPlayerViewController(source: nd, title: nextTitle ?? nu) }
+                else { return }
+                if let anchor = self.presentingAnchor() { anchor.present(nvc, animated: true) }
+            }
+        } else {
+            guard let src = makeFFSource(url: url) else { call.reject("无法构造数据源: \(url)"); return }
+            vc = FFmpegPlayerViewController(source: src, title: title, subSources: subs) { [weak self] in
+                guard let self, let nu = nextUrl, let nd = self.makeFFSource(url: nu) else { return }
+                let nvc = FFmpegPlayerViewController(source: nd, title: nextTitle ?? nu)
+                if let anchor = self.presentingAnchor() { anchor.present(nvc, animated: true) }
+            }
+        }
+        guard let anchor = presentingAnchor() else { call.reject("no anchor to present"); return }
+        anchor.present(vc, animated: true)
+        Log.write("playNative 打开 \(title)")
+        call.resolve([:])
+    }
+
     @objc func clearCache(_ call: CAPPluginCall) {
         try? FileManager.default.removeItem(at: mediaDir)
         _ = mediaDir
@@ -958,7 +1044,9 @@ public class LocalMediaPlugin: CAPPlugin, CAPBridgedPlugin, WKURLSchemeHandler, 
         }
         // v1.1.28：smb2/<key> → 内置 SMB2 直连流（无需系统选择器授权）
         if path.hasPrefix("smb2/") {
-            let key = String(path.dropFirst(5))
+            // key 本身含 "smb2:" 前缀且经 percent-encode，解码后才能命中 smb2Streams
+            let rawKey = String(path.dropFirst(5))
+            let key = rawKey.removingPercentEncoding ?? rawKey
             Log.write("scheme 路由 SMB2 直连流 key=\(key)")
             guard let s2 = Self.smb2Streams[key] else {
                 urlSchemeTask.didFailWithError(Self.error(404, "smb2 stream not open: " + key))

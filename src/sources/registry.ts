@@ -2,7 +2,7 @@
 
 import { state } from '../core/store';
 import type { MediaItem, Source } from '../core/types';
-import { localUrl, smbUrl } from '../native/localMedia';
+import { localUrl, smbUrl, isNative } from '../native/localMedia';
 import { WebDAVClient } from './webdav';
 import { makeClient } from './mediaServer';
 
@@ -80,6 +80,15 @@ export function resolvePlayback(key: string): ResolvedPlayback | null {
     const url = smbUrl(name);
     if (!url) return null;
     return { url, title: name, localName: null, smbName: name };
+  }
+  // v1.1.31：内置 SMB2 直连流。key = "smb2:<host>|<port>|<share>|<path>/<name>"，
+  // 整个 key 经 percent-encode 放进 localmedia:///smb2%2F<enc>，原生 handler 解码后查 smb2Streams。
+  if (key.startsWith('smb2:')) {
+    if (!isNative) return null;
+    const url = 'localmedia:///smb2%2F' + encodeURIComponent(key);
+    const name = key.slice(5);
+    const title = name.split('/').pop() ?? name;
+    return { url, title, localName: null, smbName: name };
   }
   if (key.startsWith('emby:')) {
     const rest = key.slice(5);

@@ -45,6 +45,8 @@ interface LocalMediaPluginInterface {
   openSMBFile(options: { host: string; port: string; share: string; path: string; user?: string; pass?: string; name: string }): Promise<PickedFile>;
   // v1.1.27
   connectSMB(options: { host: string; port: string; share: string }): Promise<{ ok: boolean; name?: string }>;
+  // v1.1.31：FFmpeg 原生播放（url 可为 smb2:<key> / localmedia:///<name> / http(s)://…）
+  playNative(options: { url: string; title?: string; subs?: { url: string }[]; nextUrl?: string; nextTitle?: string }): Promise<{ ok: boolean }>;
 }
 
 export const LocalMedia = registerPlugin<LocalMediaPluginInterface>('LocalMedia');
@@ -65,6 +67,26 @@ export function localUrl(name: string): string | null {
 export function smbUrl(name: string): string | null {
   if (isNative || !hasDom) return 'localmedia:///smb%2F' + encodeURIComponent(name);
   return null;
+}
+
+// v1.1.31：iOS <video>（AVFoundation）只稳支持 MP4/MOV/M4V（H.264/HEVC+AAC）。
+// 其余容器（MKV/AVI/FLV/RMVB/TS/WebM/OGG/WMV/VOB/MPG…）走原生 FFmpeg 播放。
+const NATIVE_EXTS = ['mkv', 'avi', 'flv', 'rmvb', 'rm', 'ts', 'm2ts', 'webm', 'ogv', 'ogg', 'wmv', 'asf', 'vob', 'mpg', 'mpeg'];
+export function needsNativePlayer(name: string): boolean {
+  if (!isNative) return false; // 浏览器模式无 FFmpeg，退回 <video>
+  const ext = (name.split('.').pop() ?? '').toLowerCase();
+  return NATIVE_EXTS.includes(ext);
+}
+
+/** v1.1.31：用原生 FFmpeg 播放器全屏播放。url 可为 smb2:<key> / localmedia:///<name> / http(s)://… */
+export async function playNative(opts: { url: string; title?: string; subs?: { url: string }[]; nextUrl?: string; nextTitle?: string }): Promise<void> {
+  if (!isNative) throw new Error('浏览器模式无原生 FFmpeg 播放器');
+  try {
+    await LocalMedia.playNative(opts);
+  } catch (e) {
+    console.warn('playNative 失败', e);
+    throw e;
+  }
 }
 
 export interface SMBBrowseResult {

@@ -21,6 +21,8 @@ DESC
   # LocalMedia.framework/，运行时 Bundle(for:).url(forResource:) 可取到。
   s.resources      = ['Resources/sample.mp4']
   s.dependency 'Capacitor'
+  # v1.1.31：FFmpeg C shim——非 MP4 容器（MKV/AVI/FLV/RMVB/TS…）走原生 FFmpeg 解码播放
+  s.dependency 'FFmpegShim'
   s.swift_version  = '5.0'
   # 注意：不要加 static_framework。use_frameworks! 下默认动态 framework 才会被
   # 嵌入 App.app/Frameworks/（校验脚本在那里找符号）；静态链接会进主二进制导致 MISSING SYMBOL

@@ -282,7 +282,7 @@ async function listDir(body: HTMLElement, source: Source, path: string): Promise
 async function playSMB(body: HTMLElement, source: Source, path: string, name: string): Promise<void> {
   try {
     const r = await openSMBFile(smbOpts(source, path), name);
-    openPlayer('smb:' + r.name);
+    openPlayer(r.name); // r.name 已含 "smb2:" 前缀，registry 走 smb2 直连流分支
   } catch (e) {
     toast('直接打开失败（' + (e instanceof Error ? e.message : String(e)) + '），改用系统选择器…');
     await doBrowseSMB(body, source);
