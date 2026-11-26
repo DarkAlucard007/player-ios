@@ -260,6 +260,16 @@ jobs:
           find "Pods/Target Support Files" -iname "*FFmpegShim*xcconfig" -exec cat {} \;
           echo "=== grep HEADER_SEARCH_PATHS (ffmpeg) ==="
           grep -rn "HEADER_SEARCH_PATHS" "Pods/Target Support Files/" 2>/dev/null | grep -i ffmpeg
+      - name: FFmpegShim 诊断（podspec/头文件/生成 xcconfig）
+        run: |
+          echo "=== podspec after sed ==="
+          cat media-plugin/FFmpegShim.podspec
+          echo "=== header at abs path? ==="
+          ls -la "$GITHUB_WORKSPACE/media-plugin/FFmpegShim/include/libavutil/avutil.h" 2>&1 | head -3
+          echo "=== generated FFmpegShim xcconfig ==="
+          find ios/App/Pods -iname "*FFmpegShim*" -name "*.xcconfig" 2>/dev/null | while read f; do echo "--- $f ---"; cat "$f"; done
+          echo "=== grep HEADER_SEARCH in all pod xcconfigs ==="
+          grep -rn "HEADER_SEARCH_PATHS" ios/App/Pods/Target\ Support\ Files/ 2>/dev/null | grep -i ffmpeg | head
       - name: 校验插件已被 CocoaPods 集成
         if: ${{ hashFiles('media-plugin/LocalMedia.podspec') != '' }}
         working-directory: ios/App
