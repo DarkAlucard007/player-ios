@@ -409,13 +409,20 @@ final class SMB2Connection {
         return Array(resp[64...])
     }
     private func negotiate() throws {
-        var body = B.le16(36) + B.le16(3) + B.le16(0x0001) + B.le16(0) + B.le32(0)
+        var body = B.le16(36) + B.le16(4) + B.le16(0x0001) + B.le16(0) + B.le32(0)
         var guid = [UInt8](repeating: 0, count: 16)
         for i in 0..<16 { guid[i] = UInt8.random(in: 0...255) }
         body += guid
         body += B.le64(0)
-        body += B.le16(0x0210) + B.le16(0x0300) + B.le16(0x0302)
-        let resp = try rpc(Self.opNegotiate, body, sign: false)
+        body += B.le16(0x0202) + B.le16(0x0210) + B.le16(0x0300) + B.le16(0x0302)
+        let msg = header(Self.opNegotiate, id: 1, sign: false) + body
+        // 诊断：记录完整出站 NEGOTIATE 报文（前 108 字节 hex），便于逐字节核对
+        var hex = ""
+        for b in msg.prefix(108) { hex += String(format: "%02X ", b) }
+        Log.write("smb2 NEGOTIATE 出站报文(前108B)：\(hex)")
+        msgId = 1
+        try sendRaw(msg)
+        let resp = try receive()
         let ss = Int(B.u16(resp, 0))
         dialect = B.u16(resp, 2)
         requireSigning = (B.u16(resp, 4) & 0x0002) != 0

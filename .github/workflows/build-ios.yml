@@ -162,7 +162,7 @@ jobs:
       - name: 编译 FFmpeg（iOS arm64 静态库）
         run: |
           set -e
-          FFVER=n6.1.1
+          FFVER=6.1.6
           curl -fsSL https://ffmpeg.org/releases/ffmpeg-$FFVER.tar.bz2 -o /tmp/ffmpeg.tar.bz2
           tar xjf /tmp/ffmpeg.tar.bz2 -C /tmp
           cd /tmp/ffmpeg-$FFVER
