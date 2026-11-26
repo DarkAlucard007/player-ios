@@ -107,10 +107,16 @@ final class FFmpegPlayer {
         CVPixelBufferLockBaseAddress(pb, [])
         let base = CVPixelBufferGetBaseAddress(pb)!.assumingMemoryBound(to: UInt8.self)
         base.update(from: bgraBuf, count: bgraBuf.count)
-        if let provider = CGImageProvider(pixelBuffer: pb), let img = CGImage(provider) {
-            displayLayer.contents = img
-        }
         CVPixelBufferUnlockBaseAddress(pb, [])
+        // 纯 CoreGraphics 造 BGRA CGImage——不依赖本 SDK 缺失的 CGImageProvider / CGImage(pixelBuffer:) 便捷 API
+        if let provider = CGDataProvider(data: Data(bgraBuf) as CFData) {
+            let info = CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue)
+            if let img = CGImage(width: videoWidth, height: videoHeight, bitsPerComponent: 8, bitsPerPixel: 32,
+                                 bytesPerRow: videoWidth * 4, space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: info,
+                                 provider: provider, decode: nil, shouldInterpolate: false, intent: .defaultIntent) {
+                displayLayer.contents = img
+            }
+        }
         MainActor.assumeIsolated { onTime?(pts) }
     }
 
