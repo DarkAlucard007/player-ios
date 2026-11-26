@@ -25,7 +25,7 @@ final class FFmpegDataSource {
 
 final class FFmpegPlayer {
     private var player: OpaquePointer?
-    private let displayLayer = AVSampleBufferDisplayLayer()
+    private let displayLayer = CALayer()
     private let audioEngine = AVAudioEngine()
     private let playerNode = AVAudioPlayerNode()
     private var audioFormat: AVAudioFormat?
@@ -45,7 +45,7 @@ final class FFmpegPlayer {
 
     init() { bgraBuf = [] }
 
-    var display: AVSampleBufferDisplayLayer { displayLayer }
+    var display: CALayer { displayLayer }
     var paused: Bool { isPaused }
 
     func open(source: FFmpegDataSource) {
@@ -63,7 +63,7 @@ final class FFmpegPlayer {
         videoHeight = Int(ff_player_video_h(player))
         bgraBuf = [UInt8](repeating: 0, count: videoWidth * videoHeight * 4)
         configureAudioEngine()
-        displayLayer.videoGravity = .resizeAspect
+        displayLayer.contentsGravity = .resizeAspect
         MainActor.assumeIsolated { onReady?() }
         runDecodeLoop()
     }
@@ -108,21 +108,9 @@ final class FFmpegPlayer {
         let base = CVPixelBufferGetBaseAddress(pb)!.assumingMemoryBound(to: UInt8.self)
         base.update(from: bgraBuf, count: bgraBuf.count)
         CVPixelBufferUnlockBaseAddress(pb, [])
-        let timing = CMSampleTimingInfo(duration: CMTime(value: 3000, timescale: 90000),
-                                        presentationTimeStamp: CMTime(value: Int64(pts * 90000), timescale: 90000),
-                                        decodeTimeStamp: .invalid)
-        var fmtDesc: CMVideoFormatDescription?
-        let props = [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
-                     kCVPixelBufferWidthKey as String: videoWidth,
-                     kCVPixelBufferHeightKey as String: videoHeight] as CFDictionary
-        _ = CMVideoFormatDescriptionCreateForImageBufferProperties(nil, props, &fmtDesc)
-        guard let fmtDesc else { return }
-        var sb: CMSampleBuffer?
-        let st = CMSampleBufferCreateForImageBuffer(allocator: nil, imageBuffer: pb, dataReady: true,
-                                                    makeDataReadyCallback: nil, refcon: nil,
-                                                    formatDescription: fmtDesc, sampleTiming: &timing,
-                                                    sampleBufferOut: &sb)
-        if st == noErr, let sb { displayLayer.enqueue(sb) }
+        if let img = CGImage(pixelBuffer: pb, options: [.noPreserveOrientation], auxiliaryInfo: nil) {
+            displayLayer.contents = img
+        }
         MainActor.assumeIsolated { onTime?(pts) }
     }
 
