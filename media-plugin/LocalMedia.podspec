@@ -28,8 +28,8 @@ DESC
     'HEADER_SEARCH_PATHS'  => '$(SRCROOT)/FFmpegShim/include',
     'LIBRARY_SEARCH_PATHS' => '$(SRCROOT)/FFmpegShim/libs'
   }
-  s.libraries  = 'avformat', 'avcodec', 'avutil', 'swscale', 'swresample', 'bz2', 'z', 'c'
-  s.frameworks = 'CoreMedia', 'VideoToolbox', 'CoreVideo', 'CoreFoundation', 'AudioToolbox', 'AVFoundation'
+  s.libraries  = 'avformat', 'avcodec', 'avutil', 'swscale', 'swresample', 'bz2', 'z', 'c', 'iconv'
+  s.frameworks = 'CoreMedia', 'VideoToolbox', 'CoreVideo', 'CoreFoundation', 'AudioToolbox', 'AVFoundation', 'CoreAudioTypes'
   s.swift_version  = '5.0'
   # 注意：不要加 static_framework。use_frameworks! 下默认动态 framework 才会被
   # 嵌入 App.app/Frameworks/（校验脚本在那里找符号）；静态链接会进主二进制导致 MISSING SYMBOL
