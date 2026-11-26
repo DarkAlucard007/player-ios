@@ -111,10 +111,16 @@ final class FFmpegPlayer {
         let timing = CMSampleTimingInfo(duration: CMTime(value: 3000, timescale: 90000),
                                         presentationTimeStamp: CMTime(value: Int64(pts * 90000), timescale: 90000),
                                         decodeTimeStamp: .invalid)
+        var fmtDesc: CMVideoFormatDescription?
+        let props = [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
+                     kCVPixelBufferWidthKey as String: videoWidth,
+                     kCVPixelBufferHeightKey as String: videoHeight] as CFDictionary
+        _ = CMVideoFormatDescriptionCreateForImageBufferProperties(nil, props, &fmtDesc)
+        guard let fmtDesc else { return }
         var sb: CMSampleBuffer?
         let st = CMSampleBufferCreateForImageBuffer(allocator: nil, imageBuffer: pb, dataReady: true,
                                                     makeDataReadyCallback: nil, refcon: nil,
-                                                    formatDescription: nil, sampleTiming: timing,
+                                                    formatDescription: fmtDesc, sampleTiming: &timing,
                                                     sampleBufferOut: &sb)
         if st == noErr, let sb { displayLayer.enqueue(sb) }
         MainActor.assumeIsolated { onTime?(pts) }
