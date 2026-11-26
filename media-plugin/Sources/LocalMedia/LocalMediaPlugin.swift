@@ -636,7 +636,7 @@ public class LocalMediaPlugin: CAPPlugin, CAPBridgedPlugin, WKURLSchemeHandler, 
                 return nil
             }
             return FFmpegDataSource(endOf: Int64(stream.endOf)) { off, buf, n in
-                let d = stream.read(offset: off, length: n)
+                let d = stream.read(offset: UInt64(max(0, off)), length: n)
                 if d.isEmpty { return 0 }
                 buf.update(from: (d as NSData).bytes.assumingMemoryBound(to: UInt8.self), count: d.count)
                 return d.count

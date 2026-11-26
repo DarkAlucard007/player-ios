@@ -156,6 +156,16 @@ int ff_player_audio_float(FFPlayer *p, float *outL, float *outR, int outCap) {
     return converted > 0 ? converted : 0;
 }
 
+CMSampleBufferRef ff_player_make_cmsample(CVPixelBufferRef pb, double pts, double dur) {
+    CMSampleTimingInfo timing;
+    timing.duration = CMTimeMakeScale((int64_t)(dur * 90000), 90000);
+    timing.presentationTimeStamp = CMTimeMakeScale((int64_t)(pts * 90000), 90000);
+    timing.decodeTimeStamp = kCMTimeInvalid;
+    CMSampleBufferRef sb = NULL;
+    OSStatus st = CMSampleBufferCreateForImageBuffer(NULL, pb, true, NULL, NULL, NULL, &timing, &sb);
+    return st == noErr ? sb : NULL;
+}
+
 void ff_player_seek(FFPlayer *p, double seconds) {
     if (!p->fmt || !p->vdec) return;
     int64_t target = (int64_t)(seconds / av_q2d(p->vtb));

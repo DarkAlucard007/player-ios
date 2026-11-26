@@ -27,6 +27,7 @@ final class FFmpegPlayer {
     private var player: OpaquePointer?
     private let displayLayer = AVSampleBufferDisplayLayer()
     private let audioEngine = AVAudioEngine()
+    private let playerNode = AVAudioPlayerNode()
     private var audioFormat: AVAudioFormat?
     private var isPaused = false
     private var stopped = false
@@ -70,7 +71,8 @@ final class FFmpegPlayer {
     private func configureAudioEngine() {
         guard let fmt = AVAudioFormat(standardFormatWithSampleRate: 48000, channels: 2) else { return }
         audioFormat = fmt
-        audioEngine.attach(audioEngine.mainMixerNode)
+        audioEngine.attach(playerNode)
+        audioEngine.connect(playerNode, to: audioEngine.mainMixerNode, format: fmt)
         audioEngine.connect(audioEngine.mainMixerNode, to: audioEngine.outputNode, format: fmt)
         do { try audioEngine.start() } catch { Log.write("ffmpeg 音频引擎启动失败：\(error.localizedDescription)") }
     }
@@ -101,50 +103,44 @@ final class FFmpegPlayer {
         let pts = bgraBuf.withUnsafeMutableBytes { ptr in
             ff_player_video_bgra(player, ptr.baseAddress!.assumingMemoryBound(to: UInt8.self), Int32(bgraBuf.count))
         }
-        guard pts >= 0 else { CVPixelBufferRelease(pb); return }
+        guard pts >= 0 else { return }
         CVPixelBufferLockBaseAddress(pb, [])
         let base = CVPixelBufferGetBaseAddress(pb)!.assumingMemoryBound(to: UInt8.self)
         base.update(from: bgraBuf, count: bgraBuf.count)
         CVPixelBufferUnlockBaseAddress(pb, [])
-        let timing = CMSampleTimingInfo(duration: CMTime(seconds: 1.0/30.0, preferredTimescale: 600),
-                                        presentationTimeStamp: CMTime(seconds: pts, preferredTimescale: 600),
-                                        decodeTimeStamp: CMTime.invalid)
-        var sb: CMSampleBuffer?
-        if CMSampleBufferCreateForImageBuffer(nil, pb, true, { timing }, nil, nil, &sb) == noErr, let sb {
-            CVPixelBufferRetain(pb)
+        if let sb = ff_player_make_cmsample(pb, pts, 1.0 / 30.0) {
             displayLayer.enqueue(sb)
         }
-        CVPixelBufferRelease(pb)
         MainActor.assumeIsolated { onTime?(pts) }
     }
 
     private func renderAudio() {
-        guard let audioFormat, let chData = audioFormat.floatChannelData else { return }
+        guard let audioFormat else { return }
         let cap = 4800 * 2 // ~100ms @48k stereo
-        guard let pb = AVAudioPCMBuffer(pcmFormat: audioFormat, frameCapacity: AVAudioFrameCount(cap)) else { return }
+        guard let pb = AVAudioPCMBuffer(pcmFormat: audioFormat, frameCapacity: AVAudioFrameCount(cap)),
+              let chData = pb.floatChannelData else { return }
         let n = Int(ff_player_audio_float(player, chData[0], chData[1], Int32(cap)))
         if n > 0 {
             pb.frameLength = AVAudioFrameCount(n)
-            audioEngine.mainMixerNode.scheduleBuffer(pb, at: nil, options: .interrupts)
+            playerNode.scheduleBuffer(pb, at: nil, options: .interrupts)
         }
     }
 
     func play() {
         isPaused = false
-        displayLayer.play()
+        playerNode.play()
         decodeQueue.async { [weak self] in self?.runDecodeLoop() }
     }
-    func pause() { isPaused = true; displayLayer.pause() }
+    func pause() { isPaused = true; playerNode.pause() }
     func seek(to seconds: Double) {
         ff_player_seek(player, seconds)
-        displayLayer.removeAllCallbacks()
         if !isPaused { decodeQueue.async { [weak self] in self?.runDecodeLoop() } }
     }
     func setVolume(_ v: Float) { audioEngine.mainMixerNode.outputVolume = max(0, min(1, v)) }
     func setLooping(_ on: Bool) { looping = on }
     func stop() {
         stopped = true; isPaused = true
-        displayLayer.pause(); displayLayer.removeAll()
+        playerNode.pause()
         audioEngine.pause()
         if let p = player { ff_player_free(p); player = nil }
     }
