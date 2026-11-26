@@ -174,10 +174,6 @@ jobs:
             --cc=clang \
             --enable-static --disable-shared \
             --disable-doc --disable-ffplay --disable-ffprobe \
-            --enable-demuxers=matroska,webm,avi,flv,mpegts,mov,mp4,ogg,asf \
-            --enable-protocols=file,pipe,http,tcp \
-            --enable-decoders=hevc,h264,aac,ac3,eac3,vorbis,opus,vp8,vp9,mp3,flac \
-            --enable-parsers=hevc,h264,aac \
             --enable-swscale --enable-swresample \
             --extra-libs="-lCoreMedia -lVideoToolbox -lCoreVideo -lCoreFoundation -lAudioToolbox" \
             > /tmp/ffmpeg-configure.log 2>&1 || { tail -n 40 /tmp/ffmpeg-configure.log; exit 1; }
