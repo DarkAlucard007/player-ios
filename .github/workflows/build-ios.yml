@@ -167,6 +167,10 @@ jobs:
           tar xjf /tmp/ffmpeg.tar.bz2 -C /tmp
           cd /tmp/ffmpeg-$FFVER
           SYSROOT=$(xcrun --sdk iphoneos --show-sdk-path)
+           echo 'int main(){return 0;}' > /tmp/t.c
+           echo "=== manual compiler test ==="
+           clang -arch arm64 -isysroot "$SYSROOT" -miphoneos-version-min=14.0 /tmp/t.c -o /tmp/t 2>&1 | head -30
+           if [ -x /tmp/t ]; then echo "MANUAL TEST OK"; else echo "MANUAL TEST FAILED"; fi
           ./configure \
             --prefix="$GITHUB_WORKSPACE/media-plugin/ffmpeg" \
             --extra-cflags="-isysroot $SYSROOT -miphoneos-version-min=14.0 -arch arm64" \
