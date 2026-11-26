@@ -1,23 +1,32 @@
-// FFmpegShim.h — 伞头：把 FFmpeg C API 暴露给 Swift（经 CocoaPods 生成的 FFmpegShim module）。
-// FFmpeg 公共头由 CI 拷到 media-plugin/FFmpegShim/include/，且 workflow 用 sed 把 podspec 的
-// HEADER_SEARCH_PATHS 写成该目录的绝对路径。用「尖括号包含」走搜索路径（引号包含会相对编译时
-// 伞头所在 Pods/Headers 目录解析，那里没有 FFmpeg 头，故不用引号）。FFmpeg 头不进 source_files
-// （不作为 module 成员，避免 cyclic dependency）。
+// FFmpegShim.h — 干净的对 Swift 友好的 C 播放引擎 API。
+// 所有 FFmpeg C API 的繁琐交互（宏、accessor、指针类型）都封装在 FFmpegShim.m 里，
+// Swift 侧只调这些简单函数，不直接 import FFmpeg 头。
 #ifndef FFMPEG_SHIM_H
 #define FFMPEG_SHIM_H
+#include <stdint.h>
 
-#include <libavutil/avutil.h>
-#include <libavutil/opt.h>
-#include <libavutil/imgutils.h>
-#include <libavutil/pixfmt.h>
-#include <libavutil/channel_layout.h>
-#include <libavutil/samplefmt.h>
-#include <libavcodec/avcodec.h>
-#include <libavformat/avformat.h>
-#include <libswscale/swscale.h>
-#include <libswresample/swresample.h>
+// 读字节回调：从 offset 读最多 size 字节到 buf，返回实际读取字节数（EOF 返回 0）。
+typedef int (*ff_read_fn)(void *opaque, int64_t offset, uint8_t *buf, int size);
 
-// 自定义 AVIO：把 AVIOContext 挂到 AVFormatContext.pb 上（Swift 侧 AVFormatContext 不透明，需 C 助手）
-static inline void ff_format_set_pb(AVFormatContext *fmt, AVIOContext *pb) { fmt->pb = pb; }
+typedef struct FFPlayer FFPlayer;
+
+FFPlayer *ff_player_new(int64_t endOf, ff_read_fn reader, void *readerOpaque);
+void ff_player_free(FFPlayer *p);
+
+// 解封装 + 找流 + 开解码器。返回 0 成功，<0 失败。
+int ff_player_open(FFPlayer *p);
+double ff_player_duration(FFPlayer *p);   // 秒
+int ff_player_video_w(FFPlayer *p);
+int ff_player_video_h(FFPlayer *p);
+
+// 解下一帧。返回 1=有视频帧、2=有音频帧、0=EOF、<0=错误。
+int ff_player_next(FFPlayer *p);
+// 取当前视频帧为 BGRA（w*h*4 字节）拷到 out，返回 PTS（秒），失败返回 -1。
+double ff_player_video_bgra(FFPlayer *p, uint8_t *out, int outCap);
+// 取当前音频帧重采样为 float 立体声 48k，分别拷到 outL/outR（各 outCap 样本），返回每声道样本数。
+int ff_player_audio_float(FFPlayer *p, float *outL, float *outR, int outCap);
+
+// 跳到 seconds 秒。
+void ff_player_seek(FFPlayer *p, double seconds);
 
 #endif // FFMPEG_SHIM_H

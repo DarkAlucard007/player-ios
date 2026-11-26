@@ -15,6 +15,9 @@ import AVFoundation
 import Photos
 import UniformTypeIdentifiers
 
+// 让同模块其他文件（SMB2Client / FFmpegPlayer / FFmpegPlayerViewController）能直接用 `Log`
+typealias Log = LocalMediaPlugin.Log
+
 @objc(LocalMediaPlugin)
 public class LocalMediaPlugin: CAPPlugin, CAPBridgedPlugin, WKURLSchemeHandler, UIDocumentPickerDelegate {
 
@@ -635,34 +638,22 @@ public class LocalMediaPlugin: CAPPlugin, CAPBridgedPlugin, WKURLSchemeHandler, 
             return FFmpegDataSource(endOf: Int64(stream.endOf)) { off, buf, n in
                 let d = stream.read(offset: off, length: n)
                 if d.isEmpty { return 0 }
-                buf?.update(from: (d as NSData).bytes.assumingMemoryBound(to: UInt8.self), count: d.count)
-                return Int32(d.count)
+                buf.update(from: (d as NSData).bytes.assumingMemoryBound(to: UInt8.self), count: d.count)
+                return d.count
             }
         }
-        if url.hasPrefix("localmedia:///") {
-            let name = url.dropFirst("localmedia:///".count)
-            let decoded = String(name).removingPercentEncoding ?? String(name)
-            let path = mediaDir.appendingPathComponent(decoded)
+        if url.hasPrefix("localmedia:///") || url.hasPrefix("file://") {
+            let raw = url.hasPrefix("localmedia:///") ? String(url.dropFirst("localmedia:///".count)) : String(url.dropFirst("file://".count))
+            let decoded = raw.removingPercentEncoding ?? raw
+            let path = url.hasPrefix("localmedia:///") ? mediaDir.appendingPathComponent(decoded) : URL(fileURLWithPath: decoded)
             guard let fh = try? FileHandle(forReadingFrom: path) else { return nil }
             let size = (try? fh.seekToEnd()) ?? 0
             return FFmpegDataSource(endOf: Int64(size)) { off, buf, n in
-                _ = try? fh.seek(toFileOffset: off)
+                _ = try? fh.seek(toFileOffset: UInt64(max(0, off)))
                 let d = (try? fh.readData(ofLength: n)) ?? Data()
                 if d.isEmpty { return 0 }
-                buf?.update(from: (d as NSData).bytes.assumingMemoryBound(to: UInt8.self), count: d.count)
-                return Int32(d.count)
-            }
-        }
-        if url.hasPrefix("file://") {
-            let path = String(url.dropFirst("file://".count)).removingPercentEncoding ?? String(url.dropFirst("file://".count))
-            guard let fh = try? FileHandle(forReadingFrom: URL(fileURLWithPath: path)) else { return nil }
-            let size = (try? fh.seekToEnd()) ?? 0
-            return FFmpegDataSource(endOf: Int64(size)) { off, buf, n in
-                _ = try? fh.seek(toFileOffset: off)
-                let d = (try? fh.readData(ofLength: n)) ?? Data()
-                if d.isEmpty { return 0 }
-                buf?.update(from: (d as NSData).bytes.assumingMemoryBound(to: UInt8.self), count: d.count)
-                return Int32(d.count)
+                buf.update(from: (d as NSData).bytes.assumingMemoryBound(to: UInt8.self), count: d.count)
+                return d.count
             }
         }
         return nil
@@ -681,24 +672,10 @@ public class LocalMediaPlugin: CAPPlugin, CAPBridgedPlugin, WKURLSchemeHandler, 
         }
         let nextUrl = call.getString("nextUrl")
         let nextTitle = call.getString("nextTitle")
-        let isHttp = url.hasPrefix("http://") || url.hasPrefix("https://")
-        let vc: FFmpegPlayerViewController
-        if isHttp {
-            vc = FFmpegPlayerViewController(directURL: url, title: title, subSources: subs) { [weak self] in
-                guard let self, let nu = nextUrl else { return }
-                let nvc: FFmpegPlayerViewController
-                if nu.hasPrefix("http") { nvc = FFmpegPlayerViewController(directURL: nu, title: nextTitle ?? nu) }
-                else if let nd = self.makeFFSource(url: nu) { nvc = FFmpegPlayerViewController(source: nd, title: nextTitle ?? nu) }
-                else { return }
-                if let anchor = self.presentingAnchor() { anchor.present(nvc, animated: true) }
-            }
-        } else {
-            guard let src = makeFFSource(url: url) else { call.reject("无法构造数据源: \(url)"); return }
-            vc = FFmpegPlayerViewController(source: src, title: title, subSources: subs) { [weak self] in
-                guard let self, let nu = nextUrl, let nd = self.makeFFSource(url: nu) else { return }
-                let nvc = FFmpegPlayerViewController(source: nd, title: nextTitle ?? nu)
-                if let anchor = self.presentingAnchor() { anchor.present(nvc, animated: true) }
-            }
+        let vc = FFmpegPlayerViewController(source: src, title: title, subSources: subs) { [weak self] in
+            guard let self, let nu = nextUrl, let nd = self.makeFFSource(url: nu) else { return }
+            let nvc = FFmpegPlayerViewController(source: nd, title: nextTitle ?? nu)
+            if let anchor = self.presentingAnchor() { anchor.present(nvc, animated: true) }
         }
         guard let anchor = presentingAnchor() else { call.reject("no anchor to present"); return }
         anchor.present(vc, animated: true)

@@ -6,8 +6,7 @@ import CoreVideo
 /// 纯原生全屏播放 UI（FFmpeg 解码，用于 MKV/AVI/FLV 等 <video> 不支持的容器）。
 final class FFmpegPlayerViewController: UIViewController {
     private let source: FFmpegDataSource
-    private let directURL: String?
-    private let title: String
+    private let videoTitle: String
     private let subSources: [FFmpegDataSource]
     private let nextLoader: (() -> Void)?
     private let player = FFmpegPlayer()
@@ -28,23 +27,11 @@ final class FFmpegPlayerViewController: UIViewController {
     private var subLines: [(t: Double, text: String)] = []
     private var subIndex = 0
     private var showSubs = false
-    private var lastTime: Double = 0
     private var ended = false
 
     init(source: FFmpegDataSource, title: String, subSources: [FFmpegDataSource] = [], nextLoader: (() -> Void)? = nil) {
         self.source = source
-        self.directURL = nil
-        self.title = title
-        self.subSources = subSources
-        self.nextLoader = nextLoader
-        super.init(nibName: nil, bundle: nil)
-        modalPresentationStyle = .fullScreen
-        preferredContentSize = UIScreen.main.bounds.size
-    }
-    init(directURL: String, title: String, subSources: [FFmpegDataSource] = [], nextLoader: (() -> Void)? = nil) {
-        self.source = FFmpegDataSource(endOf: 0) { _, _, _ in 0 }
-        self.directURL = directURL
-        self.title = title
+        self.videoTitle = title
         self.subSources = subSources
         self.nextLoader = nextLoader
         super.init(nibName: nil, bundle: nil)
@@ -65,13 +52,11 @@ final class FFmpegPlayerViewController: UIViewController {
         player.onReady = { [weak self] in
             guard let self else { return }
             self.player.play()
-            self.titleLabel.text = self.title
-            self.player.onTime?(0)
+            self.titleLabel.text = self.videoTitle
             self.pokeControls()
         }
         player.onTime = { [weak self] t in
             guard let self else { return }
-            self.lastTime = t
             if !self.ended { self.slider.value = Float(t) }
             let dur = self.player.duration > 0 ? self.player.duration : 1
             self.slider.maximumValue = Float(max(dur, 1))
@@ -89,25 +74,25 @@ final class FFmpegPlayerViewController: UIViewController {
             self.titleLabel.text = "播放失败：\(msg)"
             self.pokeControls()
         }
-        if let durl = directURL { player.openURL(durl) } else { player.open(source: source) }
+        player.open(source: source)
     }
 
     private func buildControls() {
         controls = UIView()
         controls.backgroundColor = UIColor.black.withAlphaComponent(0.55)
         view.addSubview(controls)
-        let mk: (String, CGFloat, CGFloat, CGFloat) -> UIButton = { txt, w, h, x in
+        let mk: (String, CGFloat, CGFloat) -> UIButton = { txt, w, h in
             let b = UIButton(type: .system); b.setTitle(txt, for: .normal)
             b.setTitleColor(.white, for: .normal); b.titleLabel?.font = .systemFont(ofSize: 20, weight: .medium)
-            b.frame = CGRect(x: x, y: 0, width: w, height: h); return b
+            b.frame = CGRect(x: 0, y: 0, width: w, height: h); return b
         }
-        closeBtn = mk("✕", 44, 44, 8)
+        closeBtn = mk("✕", 44, 44)
         titleLabel = UILabel(); titleLabel.textColor = .white; titleLabel.font = .systemFont(ofSize: 14); titleLabel.textAlignment = .center
-        playBtn = mk("⏸", 44, 44, 0)
-        rotLBtn = mk("⟲", 40, 40, 0)
-        rotRBtn = mk("⟳", 40, 40, 0)
-        ccBtn = mk("CC", 40, 40, 0); ccBtn.setTitleColor(.darkGray, for: .normal)
-        timeLabel = UILabel(); timeLabel.textColor = .white; timeLabel.font = .monospacedDigitSystemFont(ofSize: 12)
+        playBtn = mk("⏸", 44, 44)
+        rotLBtn = mk("⟲", 40, 40)
+        rotRBtn = mk("⟳", 40, 40)
+        ccBtn = mk("CC", 40, 40); ccBtn.setTitleColor(.darkGray, for: .normal)
+        timeLabel = UILabel(); timeLabel.textColor = .white; timeLabel.font = .monospacedDigitSystemFont(ofSize: 12, weight: .regular)
         slider = UISlider()
         volSlider = UISlider(); volSlider.value = 1; volSlider.frame = CGRect(x: 0, y: 0, width: 90, height: 28)
         subtitleLabel = UILabel(); subtitleLabel.textColor = .white; subtitleLabel.font = .systemFont(ofSize: 16, weight: .semibold)
@@ -136,12 +121,10 @@ final class FFmpegPlayerViewController: UIViewController {
         controls.frame = CGRect(x: 0, y: 0, width: w, height: h)
         closeBtn.frame.origin = CGPoint(x: 8, y: top + 4)
         titleLabel.frame = CGRect(x: 60, y: top + 8, width: w - 120, height: 24)
-        let cx: CGFloat = (w - 3 * 44 - 4 * 8) / 4
-        playBtn.frame.origin = CGPoint(x: 8 + cx * 0, y: h / 2 - 22)
+        playBtn.frame = CGRect(x: w / 2 - 22, y: h / 2 - 22, width: 44, height: 44)
         rotLBtn.frame.origin = CGPoint(x: 8, y: h / 2 - 20)
         rotRBtn.frame.origin = CGPoint(x: 8 + 44, y: h / 2 - 20)
         ccBtn.frame.origin = CGPoint(x: w - 48, y: h / 2 - 20)
-        playBtn.frame = CGRect(x: w / 2 - 22, y: h / 2 - 22, width: 44, height: 44)
         slider.frame = CGRect(x: 16, y: h - bot - 40, width: w - 32, height: 28)
         timeLabel.frame = CGRect(x: 16, y: h - bot - 16, width: 120, height: 16)
         volSlider.frame.origin = CGPoint(x: w - 106, y: h - bot - 24)
@@ -167,7 +150,6 @@ final class FFmpegPlayerViewController: UIViewController {
     }
     @objc private func sliderChanged() {
         let t = Double(slider.value)
-        lastTime = t
         timeLabel.text = "\(Self.mmss(t)) / \(Self.mmss(player.duration))"
         player.seek(to: t)
     }
@@ -175,9 +157,9 @@ final class FFmpegPlayerViewController: UIViewController {
     @objc private func rotLeft() { rotate(by: -1) }
     @objc private func rotRight() { rotate(by: 1) }
     private func rotate(by dir: Int) {
-        let order: [ScreenOrientation] = [.portrait, .landscapeLeft, .landscapeRight]
-        let cur = (Self.currentIdx + dir % 3 + 3) % 3
-        Self.setScreenOrientation(order[cur])
+        let order: [FFScreenOrientation] = [.portrait, .landscapeLeft, .landscapeRight]
+        let cur = (Self.orientIdx + dir % 3 + 3) % 3
+        Self.setFFOrientation(order[cur])
         pokeControls()
     }
     @objc private func toggleCC() {
@@ -220,8 +202,6 @@ final class FFmpegPlayerViewController: UIViewController {
             let lines = block.components(separatedBy: "\n").map { $0.trimmingCharacters(in: .whitespaces) }
             guard let tsIdx = lines.firstIndex(of: "-->"), tsIdx > 0, tsIdx + 1 < lines.count else { continue }
             let ts = lines[tsIdx - 1]
-            let parts = ts.components(separatedBy: ",")
-            guard let hh = Double(parts.count > 0 ? parts[0].split(separator: ":")[0] as Array<String>.Element.description : "0") else { continue }
             let t = Self.parseTS(ts)
             var txt: [String] = []
             for i in (tsIdx + 1)..<lines.count { if !lines[i].isEmpty { txt.append(lines[i]) } }
@@ -245,12 +225,12 @@ final class FFmpegPlayerViewController: UIViewController {
     deinit { player.stop() }
 }
 
-// 屏幕朝向（与 LocalMediaPlugin.setOrientation 复用）
-enum ScreenOrientation: String { case portrait, landscapeLeft, landscapeRight }
+// 屏幕朝向（FFmpeg 播放器专用，避免与插件的命名冲突）
+enum FFScreenOrientation { case portrait, landscapeLeft, landscapeRight }
 extension FFmpegPlayerViewController {
-    static var currentIdx = 0
-    static func setScreenOrientation(_ o: ScreenOrientation) {
-        switch o { case .portrait: currentIdx = 0; case .landscapeLeft: currentIdx = 1; case .landscapeRight: currentIdx = 2 }
+    static var orientIdx = 0
+    static func setFFOrientation(_ o: FFScreenOrientation) {
+        switch o { case .portrait: orientIdx = 0; case .landscapeLeft: orientIdx = 1; case .landscapeRight: orientIdx = 2 }
         DispatchQueue.main.async {
             let mask: UIInterfaceOrientationMask
             switch o { case .portrait: mask = .portrait; case .landscapeLeft: mask = .landscapeLeft; case .landscapeRight: mask = .landscapeRight }
