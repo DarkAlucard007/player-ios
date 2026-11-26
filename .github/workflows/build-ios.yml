@@ -187,10 +187,11 @@ jobs:
           cd "$GITHUB_WORKSPACE"
           ls -la media-plugin/ffmpeg/lib/*.a
           ls media-plugin/ffmpeg/include/libavformat/avformat.h
-           # 把 FFmpeg 公共头拷进 FFmpegShim pod 目录，成为 source_files 一部分——#include <libavutil/avutil.h> 走 pod 自身头目录，绕开 PODS_TARGET_SRCROOT 相对路径解析不定
-           cp -r media-plugin/ffmpeg/include/* media-plugin/FFmpegShim/
-           ls media-plugin/FFmpegShim/libavutil/avutil.h
-           cp media-plugin/ffmpeg/lib/*.a media-plugin/FFmpegShim/
+           # FFmpeg 头拷到 FFmpegShim/include/（不进 source_files，避免 cyclic module），库拷到 FFmpegShim/libs/
+           mkdir -p media-plugin/FFmpegShim/include && cp -r media-plugin/ffmpeg/include/* media-plugin/FFmpegShim/include/
+           ls media-plugin/FFmpegShim/include/libavutil/avutil.h
+           mkdir -p media-plugin/FFmpegShim/libs && cp media-plugin/ffmpeg/lib/*.a media-plugin/FFmpegShim/libs/
+           ls media-plugin/FFmpegShim/libs/*.a
           echo "FFmpeg built and installed to media-plugin/ffmpeg"
 
       # 有本地 pod 插件时才需要

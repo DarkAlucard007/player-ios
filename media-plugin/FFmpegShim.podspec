@@ -8,9 +8,10 @@ Pod::Spec.new do |s|
   s.author       = { 'Alucard' => 'endtime@163.com' }
   s.platform     = :ios, '14.0'
   s.source       = { :path => '.' }
-  s.source_files = 'FFmpegShim/**/*.{h,m}'
+  s.source_files = 'FFmpegShim/FFmpegShim.{h,m}'
   s.xcconfig = {
-    'LIBRARY_SEARCH_PATHS'   => '$(PODS_TARGET_SRCROOT)/FFmpegShim',
+    'HEADER_SEARCH_PATHS'    => '$(PODS_TARGET_SRCROOT)/FFmpegShim/include',
+    'LIBRARY_SEARCH_PATHS'   => '$(PODS_TARGET_SRCROOT)/FFmpegShim/libs',
     'GCC_PREPROCESSOR_DEFINITIONS' => 'HAVE_SYS_QUEUE_H=1'
   }
   s.libraries   = 'avformat', 'avcodec', 'avutil', 'swscale', 'swresample', 'bz2', 'z', 'c'
